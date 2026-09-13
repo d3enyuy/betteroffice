@@ -1,7 +1,7 @@
 "use client";
 
-import { motion, useReducedMotion } from "motion/react";
-import type { ReactNode } from "react";
+import { useAnimate, useInView, useReducedMotion } from "motion/react";
+import { useEffect, type ReactNode } from "react";
 
 const EASE = [0.21, 0.47, 0.32, 0.98] as const;
 
@@ -14,16 +14,23 @@ export function FadeIn({
   delay?: number;
   className?: string;
 }) {
+  const [scope, animate] = useAnimate<HTMLDivElement>();
   const reduce = useReducedMotion();
+
+  useEffect(() => {
+    if (reduce) return;
+    const animation = animate(
+      scope.current,
+      { opacity: [0, 1], y: [14, 0] },
+      { duration: 0.6, delay, ease: EASE },
+    );
+    return () => animation.complete();
+  }, [animate, delay, reduce, scope]);
+
   return (
-    <motion.div
-      className={className}
-      initial={false}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: reduce ? 0 : 0.6, delay, ease: EASE }}
-    >
+    <div ref={scope} className={className}>
       {children}
-    </motion.div>
+    </div>
   );
 }
 
@@ -36,16 +43,23 @@ export function Reveal({
   delay?: number;
   className?: string;
 }) {
+  const [scope, animate] = useAnimate<HTMLDivElement>();
   const reduce = useReducedMotion();
+  const inView = useInView(scope, { once: true, margin: "0px 0px -60px 0px" });
+
+  useEffect(() => {
+    if (reduce || !inView) return;
+    const animation = animate(
+      scope.current,
+      { opacity: [0, 1], y: [16, 0] },
+      { duration: 0.55, delay, ease: EASE },
+    );
+    return () => animation.complete();
+  }, [animate, delay, inView, reduce, scope]);
+
   return (
-    <motion.div
-      className={className}
-      initial={false}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: "0px 0px -60px 0px" }}
-      transition={{ duration: reduce ? 0 : 0.55, delay, ease: EASE }}
-    >
+    <div ref={scope} className={className}>
       {children}
-    </motion.div>
+    </div>
   );
 }
