@@ -52,6 +52,7 @@ struct ProjectedRow {
 struct ProjectedTable {
     attrs: JsonObject,
     rows: Vec<ProjectedRow>,
+    paragraph_formatting: Option<Value>,
 }
 
 #[derive(Clone, Copy)]
@@ -163,6 +164,7 @@ struct StyleResolver {
     default_paragraph: Option<String>,
     default_table: Option<String>,
     default_character: Option<String>,
+    table_paragraph_formatting: Option<Value>,
 }
 
 fn object(value: Option<&Value>) -> Option<&Map<String, Value>> {
@@ -646,7 +648,10 @@ impl StyleResolver {
     }
 
     fn resolve_paragraph_style(&self, style_id: Option<&str>) -> (Option<Value>, Option<Value>) {
-        let mut paragraph = field(self.doc_defaults.as_ref(), "pPr").cloned();
+        let mut paragraph = merge_paragraph_formatting(
+            field(self.doc_defaults.as_ref(), "pPr"),
+            self.table_paragraph_formatting.as_ref(),
+        );
         let mut run = field(self.doc_defaults.as_ref(), "rPr").cloned();
         let style = style_id
             .and_then(|id| self.style(id))
@@ -663,11 +668,14 @@ impl StyleResolver {
             }
         }
         if style_id.is_none() && style.is_none() && self.doc_defaults.is_none() {
-            paragraph = Some(json!({
-                "spaceAfter": 160,
-                "lineSpacing": 259,
-                "lineSpacingRule": "auto"
-            }));
+            paragraph = merge_paragraph_formatting(
+                Some(&json!({
+                    "spaceAfter": 160,
+                    "lineSpacing": 259,
+                    "lineSpacingRule": "auto"
+                })),
+                self.table_paragraph_formatting.as_ref(),
+            );
         }
         (paragraph, run)
     }
@@ -2756,7 +2764,11 @@ fn project_table(table: &Value, styles: &StyleResolver, theme: Option<&Value>) -
             )
         })
         .collect();
-    ProjectedTable { attrs, rows }
+    ProjectedTable {
+        attrs,
+        rows,
+        paragraph_formatting: field(table_style.or(default_style), "pPr").cloned(),
+    }
 }
 
 fn table_cell_story_id(parent: &str, table: usize, row: usize, cell: usize) -> String {
@@ -2907,6 +2919,10 @@ fn visit_story(
                     None,
                     1,
                 ));
+                let previous_table_formatting = std::mem::replace(
+                    &mut context.styles.table_paragraph_formatting,
+                    table.paragraph_formatting,
+                );
                 for (row_index, row) in table.rows.into_iter().enumerate() {
                     for (cell_index, cell) in row.cells.into_iter().enumerate() {
                         visit_story(
@@ -2921,6 +2937,7 @@ fn visit_story(
                         );
                     }
                 }
+                context.styles.table_paragraph_formatting = previous_table_formatting;
                 last_kind = Some("table");
             }
             "rawXml" => continue,
