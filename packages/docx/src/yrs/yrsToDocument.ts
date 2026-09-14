@@ -303,7 +303,7 @@ function attrsToTextFormatting(attributes: Attrs): TextFormatting {
   }
 
   const underline = asObject(attributes.underline);
-  if (underline) {
+  if (underline && underline.inheritedHyperlink !== true) {
     formatting.underline = {
       style: (asString(underline.style) || 'single') as NonNullable<
         TextFormatting['underline']
@@ -319,7 +319,7 @@ function attrsToTextFormatting(attributes: Attrs): TextFormatting {
   }
 
   const textColor = asObject(attributes.textColor);
-  if (textColor) {
+  if (textColor && textColor.inheritedHyperlink !== true) {
     formatting.color = {
       rgb: (asString(textColor.rgb) ?? null) as string | undefined,
       themeColor: (textColor.themeColor ?? null) as NonNullable<
