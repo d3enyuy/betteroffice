@@ -29,6 +29,7 @@ for (const format of ['pptx', 'xlsx', 'vsdx']) {
           qualityRendererPlugin(format),
           {
             name: 'only-selected-renderer-is-built',
+            enforce: 'pre',
             resolveId(source) {
               if (!/^@betteroffice\/(?:pptx|xlsx|vsdx)$/.test(source)) return;
               requested.push(source);
