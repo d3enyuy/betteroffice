@@ -728,10 +728,16 @@ function storedShape(value: unknown): Shape | undefined {
 
 function chartRunFromPayload(payload: Attrs, recovery: ChartRecovery): Run | null {
   const json = asString(payload.chartJson);
-  if (!json) return null;
+  if (!json) {
+    recovery.warn('chart run carries no chart payload; keeping the run out of the output');
+    return null;
+  }
   try {
     const chart = JSON.parse(json) as Chart;
-    if (chart?.type !== 'chart' || typeof chart.chartType !== 'string') return null;
+    if (chart?.type !== 'chart' || typeof chart.chartType !== 'string') {
+      recovery.warn('chart run carries a malformed chart payload; keeping the run out of the output');
+      return null;
+    }
     if (!chart.drawingXml) {
       const drawingXml = recovery.drawingFor(chart.rId, chart.path);
       if (!drawingXml) {
@@ -742,6 +748,7 @@ function chartRunFromPayload(payload: Attrs, recovery: ChartRecovery): Run | nul
     }
     return { type: 'run', content: [{ type: 'chart', chart }] };
   } catch {
+    recovery.warn('chart run carries an unreadable chart payload; keeping the run out of the output');
     return null;
   }
 }
@@ -1886,6 +1893,7 @@ function commentRanges(
 interface ChartRecovery {
   drawingFor(rId: string | undefined, path: string | undefined): string | undefined;
   unrecoverable(rId: string | undefined, path: string | undefined): void;
+  warn(message: string): void;
 }
 
 function collectChartDrawings(blocks: readonly BlockContent[], into: Map<string, string>): void {
@@ -1987,6 +1995,9 @@ class SaveContext {
         this.warnings.push(
           `chart run carries no drawing to replay${identity}; keeping the run out of the output`
         );
+      },
+      warn: (message) => {
+        this.warnings.push(message);
       },
     };
   }

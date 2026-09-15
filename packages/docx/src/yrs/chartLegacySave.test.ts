@@ -193,6 +193,34 @@ it('drops an unrecoverable chart inside tracked changes instead of an empty wrap
   }
 });
 
+it('warns on every dropped chart run with a malformed payload', async () => {
+  const document: Document = {
+    package: {
+      document: {
+        content: [
+          { type: 'paragraph', paraId: '00000001', content: [{ type: 'run', content: [{ type: 'text', text: 'AB' }] }] },
+        ],
+      },
+    },
+  };
+  const session = await createYrsSession({ clientId: 74035 });
+  try {
+    documentToYrs(session, document);
+    session.applyRawOps('body', [
+      { op: 'insertEmbed', index: 1, kind: 'chart', payload: {} },
+      { op: 'insertEmbed', index: 2, kind: 'chart', payload: { chartJson: 'not json' } },
+      { op: 'insertEmbed', index: 3, kind: 'chart', payload: { chartJson: JSON.stringify({ type: 'chart' }) } },
+    ]);
+    const saved = yrsToDocument(session, document);
+    const paragraph = saved.package.document.content[0] as Paragraph;
+    expect(JSON.stringify(paragraph)).not.toContain('"type":"chart"');
+    expect(saved.warnings).toHaveLength(3);
+    expect(saved.warnings?.join('\n')).toContain('chart');
+  } finally {
+    session.destroy();
+  }
+});
+
 it('recovers legacy chart placements per story when relationship ids collide', async () => {
   const bodyDrawing = CHART_DRAWING.replace('Chart 1', 'Body chart');
   const headerDrawing = CHART_DRAWING.replace('Chart 1', 'Header chart');
