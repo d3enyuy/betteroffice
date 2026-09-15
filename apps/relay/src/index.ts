@@ -1,5 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
-import { MAX_COLLABORATION_FRAME_BYTES } from "../../../shared/collaboration-limits";
+import {
+  MAX_COLLABORATION_FRAME_BYTES,
+  MAX_JOIN_REPLAY_BYTES,
+  MAX_RETAINED_HISTORY_BYTES,
+} from "../../../shared/collaboration-limits";
 import {
   classifyFrame,
   RetainedUpdateLog,
@@ -46,7 +50,7 @@ function copyBytes(message: ArrayBuffer | ArrayBufferView): Uint8Array {
 export class CollaborationRoom extends DurableObject<Env> {
   private updates = new RetainedUpdateLog(
     MAX_RETAINED_COUNT,
-    MAX_COLLABORATION_FRAME_BYTES,
+    MAX_RETAINED_HISTORY_BYTES,
   );
   private persist = Promise.resolve();
   private expiresAt: number | null = null;
@@ -88,7 +92,7 @@ export class CollaborationRoom extends DurableObject<Env> {
     const server = pair[1];
     this.ctx.acceptWebSocket(server);
     this.refreshExpiry();
-    this.updates.replay((update) => server.send(update));
+    this.updates.replay((update) => server.send(update), MAX_JOIN_REPLAY_BYTES);
     this.broadcastPeerCount();
     return new Response(null, { status: 101, webSocket: client });
   }

@@ -230,8 +230,13 @@ export class RetainedUpdateLog {
     return { puts: [entry], deletes: this.trim() };
   }
 
-  replay(send: (update: Uint8Array) => void): void {
-    for (const entry of this.updates) send(entry.bytes.slice());
+  replay(send: (update: Uint8Array) => void, maxBytes = Number.MAX_SAFE_INTEGER): void {
+    let sent = 0;
+    for (const entry of this.updates) {
+      if (sent + entry.bytes.byteLength > maxBytes) break;
+      send(entry.bytes.slice());
+      sent += entry.bytes.byteLength;
+    }
   }
 
   snapshot(): Uint8Array[] {

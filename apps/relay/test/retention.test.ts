@@ -235,6 +235,23 @@ describe("RetainedUpdateLog", () => {
     expect(log.snapshot()).toEqual([second, third]);
   });
 
+  test("caps join replay to the replay budget, oldest first", () => {
+    const first = syncFrame(2, Uint8Array.of(30));
+    const second = syncFrame(2, Uint8Array.of(31));
+    const third = syncFrame(2, Uint8Array.of(32));
+    const log = new RetainedUpdateLog(512, 1024);
+    log.retain(first);
+    log.retain(second);
+    log.retain(third);
+
+    const replayed: Uint8Array[] = [];
+    log.replay(
+      (update) => replayed.push(update),
+      first.byteLength + second.byteLength,
+    );
+    expect(replayed).toEqual([first, second]);
+  });
+
   test("replays nothing after clear and restarts sequence numbers", () => {
     const document = syncFrame(2, Uint8Array.of(33));
     const log = new RetainedUpdateLog(512, 1024);
