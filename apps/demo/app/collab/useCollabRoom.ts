@@ -76,7 +76,7 @@ export function useDemoIdentity(): DemoCollaborationUser | null {
   return user;
 }
 
-/** `enabled` false while the tab holds an unshared document: no room, none minted. */
+/** `enabled` false while the tab holds an unshared document: no room, none minted. Anyone holding the room link can read and write the shared document. */
 export function useDemoRoom(enabled = true): string | null {
   const pathname = usePathname();
   const router = useRouter();
