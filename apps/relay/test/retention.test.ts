@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { MAX_AWARENESS_PAYLOAD_BYTES } from "../../../shared/collaboration-limits";
 import { decodeMessages } from "../../../packages/docx/src/collaboration/protocol";
 import { RetainedUpdateLog, classifyFrame } from "../src/retention";
 
@@ -296,5 +297,27 @@ describe("classifyFrame", () => {
     expect(classifyFrame(Uint8Array.of(0, 3, 0))).toBe("invalid");
     expect(classifyFrame(encodeVarUint(128))).toBe("invalid");
     expect(classifyFrame(authFrame(Uint8Array.of(0xff)))).toBe("invalid");
+  });
+
+  test("flags awareness payloads above the relay cap as oversize", () => {
+    const payload = new Uint8Array(MAX_AWARENESS_PAYLOAD_BYTES + 1);
+    const oversize = frame(
+      encodeVarUint(1),
+      encodeVarUint(payload.byteLength),
+      payload,
+    );
+    expect(classifyFrame(oversize)).toBe("oversize-awareness");
+  });
+
+  test("flags oversize awareness inside a mixed document frame", () => {
+    const document = syncFrame(2, Uint8Array.of(1));
+    const payload = new Uint8Array(MAX_AWARENESS_PAYLOAD_BYTES + 1);
+    const mixed = frame(
+      document,
+      encodeVarUint(1),
+      encodeVarUint(payload.byteLength),
+      payload,
+    );
+    expect(classifyFrame(mixed)).toBe("oversize-awareness");
   });
 });

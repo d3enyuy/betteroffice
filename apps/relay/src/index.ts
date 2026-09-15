@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  MAX_AWARENESS_PAYLOAD_BYTES,
   MAX_COLLABORATION_FRAME_BYTES,
   MAX_JOIN_REPLAY_BYTES,
   MAX_RETAINED_HISTORY_BYTES,
@@ -16,6 +17,9 @@ interface Env {
 }
 
 const MAX_RETAINED_COUNT = 512;
+/** Providers send transient frames at most every 80ms, so 30/s leaves headroom. */
+const TRANSIENT_RATE_CAPACITY = 30;
+const TRANSIENT_REFILL_PER_SECOND = 30;
 const UPDATE_PREFIX = "update:";
 const SEQ_DIGITS = 16;
 const LEGACY_LOG_KEY = "updates";
@@ -23,6 +27,11 @@ const ROOM_TTL_MS = 24 * 60 * 60 * 1000;
 const TTL_REFRESH_SLACK_MS = 60 * 60 * 1000;
 
 type PeerMessage = { type: "peers"; count: number };
+
+interface TransientBucket {
+  tokens: number;
+  updatedAt: number;
+}
 
 /** Zero-padded so storage's lexicographic key order is replay order. */
 function updateKey(seq: number): string {
@@ -54,6 +63,7 @@ export class CollaborationRoom extends DurableObject<Env> {
   );
   private persist = Promise.resolve();
   private expiresAt: number | null = null;
+  private transientBuckets = new Map<WebSocket, TransientBucket>();
 
   constructor(state: DurableObjectState, env: Env) {
     super(state, env);
@@ -117,8 +127,16 @@ export class CollaborationRoom extends DurableObject<Env> {
       socket.close(1002, "Malformed collaboration frame");
       return;
     }
+    if (kind === "oversize-awareness") {
+      socket.close(1009, `Awareness exceeds ${MAX_AWARENESS_PAYLOAD_BYTES} bytes`);
+      return;
+    }
     if (kind === "auth") {
       socket.close(1008, "Auth messages are server-only");
+      return;
+    }
+    if (kind === "transient" && !this.consumeTransientToken(socket)) {
+      socket.close(1008, "Transient frame rate exceeded");
       return;
     }
 
@@ -138,11 +156,13 @@ export class CollaborationRoom extends DurableObject<Env> {
     reason: string,
     _wasClean: boolean,
   ): void {
+    this.transientBuckets.delete(socket);
     socket.close(code, reason);
     this.broadcastPeerCount();
   }
 
   webSocketError(socket: WebSocket, _error: unknown): void {
+    this.transientBuckets.delete(socket);
     socket.close(1011, "WebSocket error");
     this.broadcastPeerCount();
   }
@@ -178,6 +198,27 @@ export class CollaborationRoom extends DurableObject<Env> {
   private persistUpdates(mutation: LogMutation): void {
     this.persist = this.persist.then(() => this.writeMutation(mutation));
     this.ctx.waitUntil(this.persist);
+  }
+
+  private consumeTransientToken(socket: WebSocket): boolean {
+    const now = Date.now();
+    let bucket = this.transientBuckets.get(socket);
+    if (!bucket) {
+      bucket = { tokens: TRANSIENT_RATE_CAPACITY, updatedAt: now };
+      this.transientBuckets.set(socket, bucket);
+    } else {
+      const elapsed = (now - bucket.updatedAt) / 1000;
+      if (elapsed > 0) {
+        bucket.tokens = Math.min(
+          TRANSIENT_RATE_CAPACITY,
+          bucket.tokens + elapsed * TRANSIENT_REFILL_PER_SECOND,
+        );
+        bucket.updatedAt = now;
+      }
+    }
+    if (bucket.tokens < 1) return false;
+    bucket.tokens -= 1;
+    return true;
   }
 
   private async writeMutation(mutation: LogMutation): Promise<void> {

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, mock, setSystemTime, test } from "bun:test";
-import { MAX_COLLABORATION_FRAME_BYTES } from "../../../shared/collaboration-limits";
+import {
+  MAX_AWARENESS_PAYLOAD_BYTES,
+  MAX_COLLABORATION_FRAME_BYTES,
+} from "../../../shared/collaboration-limits";
 
 mock.module("cloudflare:workers", () => ({
   DurableObject: class {
@@ -225,6 +228,62 @@ describe("CollaborationRoom.webSocketMessage", () => {
     expect(harness.peer.send).toHaveBeenCalledTimes(1);
     expect(harness.peer.send.mock.calls[0][0]).toEqual(query);
     expect(harness.rows.size).toBe(0);
+  });
+
+  test("closes the sender on an oversize awareness payload", async () => {
+    const payload = new Uint8Array(MAX_AWARENESS_PAYLOAD_BYTES + 1);
+    const oversize = frame(
+      encodeVarUint(1),
+      encodeVarUint(payload.byteLength),
+      payload,
+    );
+    const harness = createRoom();
+    await harness.initialization;
+
+    harness.room.webSocketMessage(
+      harness.sender as never,
+      oversize.buffer as ArrayBuffer,
+    );
+
+    expect(harness.sender.close).toHaveBeenCalledTimes(1);
+    expect(harness.sender.close.mock.calls[0][0]).toBe(1009);
+    expect(harness.peer.send).not.toHaveBeenCalled();
+    expect(harness.peer.close).not.toHaveBeenCalled();
+    expect(harness.rows.size).toBe(0);
+  });
+
+  test("closes the sender on an awareness flood", async () => {
+    const awareness = Uint8Array.of(1, 1, 12);
+    const harness = createRoom();
+    await harness.initialization;
+
+    for (let index = 0; index < 31; index += 1) {
+      harness.room.webSocketMessage(
+        harness.sender as never,
+        awareness.buffer as ArrayBuffer,
+      );
+    }
+
+    expect(harness.sender.close).toHaveBeenCalledTimes(1);
+    expect(harness.sender.close.mock.calls[0][0]).toBe(1008);
+    expect(harness.peer.send).toHaveBeenCalledTimes(30);
+  });
+
+  test("does not rate-limit document bursts", async () => {
+    const harness = createRoom();
+    await harness.initialization;
+
+    for (let index = 0; index < 40; index += 1) {
+      const document = Uint8Array.of(0, 2, 1, index & 0xff);
+      harness.room.webSocketMessage(
+        harness.sender as never,
+        document.buffer as ArrayBuffer,
+      );
+    }
+    await Promise.all(harness.pending);
+
+    expect(harness.sender.close).not.toHaveBeenCalled();
+    expect(harness.rows.size).toBe(40);
   });
 });
 

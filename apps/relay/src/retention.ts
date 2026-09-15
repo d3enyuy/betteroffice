@@ -1,3 +1,5 @@
+import { MAX_AWARENESS_PAYLOAD_BYTES } from "../../../shared/collaboration-limits";
+
 const TOP_LEVEL_SYNC = 0;
 const TOP_LEVEL_AWARENESS = 1;
 const TOP_LEVEL_AUTH = 2;
@@ -10,7 +12,12 @@ const MAX_MESSAGES_PER_FRAME = 4096;
 const MAX_VAR_UINT = Number.MAX_SAFE_INTEGER;
 
 /** `document` frames carry state worth retaining, `transient` ones do not. */
-export type FrameKind = "document" | "transient" | "auth" | "invalid";
+export type FrameKind =
+  | "document"
+  | "transient"
+  | "auth"
+  | "invalid"
+  | "oversize-awareness";
 
 interface DocumentMessage {
   subtype: number;
@@ -20,6 +27,7 @@ interface DocumentMessage {
 interface DecodedFrame {
   documents: DocumentMessage[];
   hasAuth: boolean;
+  awarenessBytes: number;
 }
 
 class FrameDecoder {
@@ -94,6 +102,7 @@ function decodeFrame(frame: Uint8Array): DecodedFrame | null {
   const decoder = new FrameDecoder(frame);
   const documents: DocumentMessage[] = [];
   let hasAuth = false;
+  let awarenessBytes = 0;
   let messageCount = 0;
 
   while (!decoder.done) {
@@ -114,7 +123,9 @@ function decodeFrame(frame: Uint8Array): DecodedFrame | null {
       }
       if (subtype !== SYNC_STEP_1) documents.push({ subtype, payload });
     } else if (type === TOP_LEVEL_AWARENESS) {
-      if (decoder.readVarUint8Array() === null) return null;
+      const payload = decoder.readVarUint8Array();
+      if (payload === null) return null;
+      awarenessBytes += payload.byteLength;
     } else if (type === TOP_LEVEL_AUTH) {
       const subtype = decoder.readVarUint();
       const reason = decoder.readVarUint8Array();
@@ -131,12 +142,15 @@ function decodeFrame(frame: Uint8Array): DecodedFrame | null {
     }
   }
 
-  return { documents, hasAuth };
+  return { documents, hasAuth, awarenessBytes };
 }
 
 export function classifyFrame(frame: Uint8Array): FrameKind {
   const decoded = decodeFrame(frame);
   if (!decoded) return "invalid";
+  if (decoded.awarenessBytes > MAX_AWARENESS_PAYLOAD_BYTES) {
+    return "oversize-awareness";
+  }
   if (decoded.hasAuth) return "auth";
   return decoded.documents.length > 0 ? "document" : "transient";
 }
