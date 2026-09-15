@@ -620,15 +620,15 @@ function runContentToUnits(
         }),
       ];
     case 'drawing':
-      return [embedUnit('image', imagePayload(content.image))];
+      return [embedUnit('image', imagePayload(content.image), marks, commentId)];
     case 'horizontalRule':
       return [embedUnit('horizontalRule', { rule: content.rule }, marks, commentId)];
     case 'shape':
-      return [embedUnit('shape', shapePayload(content.shape))];
+      return [embedUnit('shape', shapePayload(content.shape), marks, commentId)];
     case 'chart':
-      return [embedUnit('chart', chartPayload(content.chart))];
+      return [embedUnit('chart', chartPayload(content.chart), marks, commentId)];
     case 'opaqueDrawing':
-      return [embedUnit('opaqueDrawing', { kind: content.kind, xml: content.xml })];
+      return [embedUnit('opaqueDrawing', { kind: content.kind, xml: content.xml }, marks, commentId)];
     case 'footnoteRef':
       return [noteRefUnit(content.id, 'footnote', marks, commentId)];
     case 'endnoteRef':

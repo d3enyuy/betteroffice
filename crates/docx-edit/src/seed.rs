@@ -1255,13 +1255,6 @@ fn note_ref_unit(
     )
 }
 
-fn hidden_marks(marks: &[Mark]) -> &[Mark] {
-    marks
-        .iter()
-        .find(|mark| mark.name == "hidden")
-        .map_or(&[], std::slice::from_ref)
-}
-
 fn run_content_to_units(
     content: &Value,
     marks: &[Mark],
@@ -1335,8 +1328,8 @@ fn run_content_to_units(
         "drawing" => vec![embed_unit(
             "image",
             image_payload(field(Some(content), "image").unwrap_or(&Value::Null)),
-            hidden_marks(marks),
-            None,
+            marks,
+            comment_id,
             1,
         )],
         "horizontalRule" => vec![embed_unit(
@@ -1352,8 +1345,8 @@ fn run_content_to_units(
                 field(Some(content), "shape").unwrap_or(&Value::Null),
                 source,
             ),
-            hidden_marks(marks),
-            None,
+            marks,
+            comment_id,
             1,
         )],
         "chart" => vec![embed_unit(
@@ -1362,8 +1355,8 @@ fn run_content_to_units(
                 field(Some(content), "chart").unwrap_or(&Value::Null),
                 source,
             ),
-            hidden_marks(marks),
-            None,
+            marks,
+            comment_id,
             1,
         )],
         "opaqueDrawing" => vec![embed_unit(
@@ -1372,8 +1365,8 @@ fn run_content_to_units(
                 "kind": field(Some(content), "kind").cloned().unwrap_or(Value::Null),
                 "xml": field(Some(content), "xml").cloned().unwrap_or(Value::Null),
             })),
-            hidden_marks(marks),
-            None,
+            marks,
+            comment_id,
             1,
         )],
         "footnoteRef" => field(Some(content), "id")
@@ -3542,6 +3535,42 @@ mod tests {
                 .unwrap()
                 .contains("structuredResult")
         );
+    }
+
+    #[test]
+    fn tracked_embeds_keep_revision_marks_and_comment_ids() {
+        let info = json!({"id": 11, "author": "Ada", "date": "2024-01-01T00:00:00Z"});
+        let run = |content: Value| json!({"type": "run", "content": [content]});
+        let tracked = |node_type: &str, child: Value| json!({"type": node_type, "info": info, "content": [child]});
+        let opaque = || json!({"type": "opaqueDrawing", "kind": "object", "xml": "<w:object/>"});
+        let paragraph = json!({"content": [
+            tracked("insertion", run(json!({"type": "drawing", "image": {"wrap": {"type": "inline"}}}))),
+            tracked("insertion", run(json!({"type": "shape", "shape": {"shapeType": "rect"}}))),
+            tracked("insertion", run(json!({"type": "chart", "chart": {"chartType": "bar"}}))),
+            tracked("insertion", run(opaque())),
+            tracked("deletion", run(opaque())),
+            {"type": "commentRangeStart", "id": 3},
+            run(opaque()),
+            {"type": "commentRangeEnd", "id": 3},
+        ]});
+        let styles = StyleResolver::new(None);
+        let (units, _) = paragraph_units(&paragraph, &styles, None, &BTreeMap::new());
+        assert_eq!(units.len(), 6);
+        for (unit, kind) in
+            units[..5]
+                .iter()
+                .zip(["image", "shape", "chart", "opaqueDrawing", "opaqueDrawing"])
+        {
+            let UnitContent::Embed { kind: actual, .. } = &unit.content else {
+                panic!("expected embed unit");
+            };
+            assert_eq!(actual, kind);
+        }
+        for unit in &units[..4] {
+            assert_eq!(unit.attrs["ins"]["author"], json!("Ada"));
+        }
+        assert_eq!(units[4].attrs["del"]["author"], json!("Ada"));
+        assert_eq!(units[5].comment_id.as_deref(), Some("3"));
     }
 
     #[test]
