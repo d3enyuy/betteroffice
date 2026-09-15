@@ -28,7 +28,7 @@ const ins = (id: number, inner: string): string =>
 
 function fixture(): Uint8Array<ArrayBuffer> {
   const parts = new Map<string, Uint8Array>();
-  const set = (name: string, xml: string) => parts.set(name, toBytes(xml));
+  const set = (name: string, xml: string | Uint8Array) => parts.set(name, toBytes(xml));
   set('[Content_Types].xml', `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="${OFFICE_DOC}.wordprocessingml.document.main+xml"/><Override PartName="/word/charts/chart1.xml" ContentType="${OFFICE_DOC}.drawingml.chart+xml"/><Override PartName="/word/comments.xml" ContentType="${OFFICE_DOC}.wordprocessingml.comments+xml"/></Types>`);
   set('_rels/.rels', `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`);
   set('word/_rels/document.xml.rels', `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdImage" Type="${R}/image" Target="media/image.png"/><Relationship Id="rIdChart1" Type="${R}/chart" Target="charts/chart1.xml"/><Relationship Id="rIdComments" Type="${R}/comments" Target="comments.xml"/></Relationships>`);

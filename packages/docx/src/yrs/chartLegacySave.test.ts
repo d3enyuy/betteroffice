@@ -120,8 +120,10 @@ function chartParagraphWith(chart: Chart): Paragraph {
 
 function chartRunXml(saved: Paragraph): string | undefined {
   const run = saved.content.find((child) => child.type === 'run');
-  const content = run?.type === 'run' && run.content.find((entry) => entry.type === 'chart');
-  return content?.type === 'chart' ? content.chart.drawingXml : undefined;
+  if (run?.type !== 'run') return undefined;
+  const content = run.content.find((entry) => entry.type === 'chart');
+  if (content?.type !== 'chart') return undefined;
+  return content.chart.drawingXml;
 }
 
 it('recovers duplicate relationship ids with the first placement', async () => {

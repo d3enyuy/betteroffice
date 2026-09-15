@@ -92,7 +92,7 @@ const textEncoder = new TextEncoder();
 
 function opaqueXmlBytes(value: unknown): number {
   if (typeof value === 'string') return 0;
-  if (Array.isArray(value)) return value.reduce((sum, entry) => sum + opaqueXmlBytes(entry), 0);
+  if (Array.isArray(value)) return value.reduce<number>((sum, entry) => sum + opaqueXmlBytes(entry), 0);
   if (value instanceof Map) {
     let sum = 0;
     for (const entry of value.values()) sum += opaqueXmlBytes(entry);
@@ -104,7 +104,7 @@ function opaqueXmlBytes(value: unknown): number {
       record.type === 'opaqueDrawing' && typeof record.xml === 'string'
         ? textEncoder.encode(record.xml).length
         : 0;
-    return own + Object.values(record).reduce((sum, entry) => sum + opaqueXmlBytes(entry), 0);
+    return own + Object.values(record).reduce<number>((sum, entry) => sum + opaqueXmlBytes(entry), 0);
   }
   return 0;
 }
