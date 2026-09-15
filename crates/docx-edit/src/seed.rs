@@ -1404,6 +1404,7 @@ fn hyperlink_to_units(
     style_formatting: Option<&Value>,
     styles: &StyleResolver,
     extra_marks: &[Mark],
+    comment_id: Option<String>,
     source: &BTreeMap<String, String>,
 ) -> Vec<InlineUnit> {
     let mut units = Vec::new();
@@ -1419,7 +1420,12 @@ fn hyperlink_to_units(
                     .chain(std::iter::once(link.clone()))
                     .collect();
                 for content in array(field(Some(child), "content")) {
-                    units.extend(run_content_to_units(content, &marks, None, source));
+                    units.extend(run_content_to_units(
+                        content,
+                        &marks,
+                        comment_id.clone(),
+                        source,
+                    ));
                 }
             }
             "simpleField" | "complexField" => {
@@ -1429,7 +1435,7 @@ fn hyperlink_to_units(
                     .chain(extra_marks.iter().cloned())
                     .chain(std::iter::once(link.clone()))
                     .collect();
-                units.push(embed_unit("field", payload, &marks, None, 1));
+                units.push(embed_unit("field", payload, &marks, comment_id.clone(), 1));
             }
             "mathEquation" => {
                 let marks: Vec<Mark> = extra_marks
@@ -1437,7 +1443,13 @@ fn hyperlink_to_units(
                     .cloned()
                     .chain(std::iter::once(link.clone()))
                     .collect();
-                units.push(embed_unit("math", math_payload(child), &marks, None, 1));
+                units.push(embed_unit(
+                    "math",
+                    math_payload(child),
+                    &marks,
+                    comment_id.clone(),
+                    1,
+                ));
             }
             _ => {}
         }
@@ -1481,7 +1493,9 @@ fn field_to_units(
     let mut children = Vec::new();
     for (index, child) in projected_children {
         let mut projected = match string(field(Some(child), "type")) {
-            Some("hyperlink") => hyperlink_to_units(child, style_formatting, styles, &[], source),
+            Some("hyperlink") => {
+                hyperlink_to_units(child, style_formatting, styles, &[], None, source)
+            }
             Some("simpleField") => {
                 let (payload, marks) = field_payload(child, style_formatting, source);
                 vec![embed_unit("field", payload, &marks, None, 1)]
@@ -1564,19 +1578,14 @@ fn tracked_to_units(
                 source,
             ));
         } else {
-            let mut linked = hyperlink_to_units(
+            units.extend(hyperlink_to_units(
                 child,
                 style_formatting,
                 styles,
                 std::slice::from_ref(&marker),
+                comment_id.clone(),
                 source,
-            );
-            if let Some(comment_id) = &comment_id {
-                for unit in &mut linked {
-                    unit.comment_id = Some(comment_id.clone());
-                }
-            }
-            units.extend(linked);
+            ));
         }
     }
     units
@@ -1650,7 +1659,7 @@ fn sdt_payload(
                 }
             }
             "hyperlink" => {
-                for unit in hyperlink_to_units(child, style_formatting, styles, &[], source) {
+                for unit in hyperlink_to_units(child, style_formatting, styles, &[], None, source) {
                     append(&mut content, unit);
                 }
             }
@@ -2113,6 +2122,7 @@ fn paragraph_units(
                     style_formatting.as_ref(),
                     styles,
                     &[],
+                    comment_id,
                     source,
                 ));
             }
@@ -3571,6 +3581,32 @@ mod tests {
         }
         assert_eq!(units[4].attrs["del"]["author"], json!("Ada"));
         assert_eq!(units[5].comment_id.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn hyperlinks_keep_embeds_and_comment_ids() {
+        let run = |content: Value| json!({"type": "run", "content": [content]});
+        let link = |child: Value| json!({"type": "hyperlink", "href": "https://example.com", "children": [child]});
+        let paragraph = json!({"content": [
+            {"type": "commentRangeStart", "id": 5},
+            link(run(json!({"type": "drawing", "image": {"wrap": {"type": "inline"}}}))),
+            link(run(json!({"type": "opaqueDrawing", "kind": "object", "xml": "<w:object/>"}))),
+            {"type": "commentRangeEnd", "id": 5},
+        ]});
+        let styles = StyleResolver::new(None);
+        let (units, _) = paragraph_units(&paragraph, &styles, None, &BTreeMap::new());
+        assert_eq!(units.len(), 2);
+        for unit in &units {
+            let UnitContent::Embed { kind, .. } = &unit.content else {
+                panic!("expected embed unit");
+            };
+            assert!(kind == "image" || kind == "opaqueDrawing");
+            assert_eq!(
+                unit.attrs["hyperlink"]["href"],
+                json!("https://example.com")
+            );
+            assert_eq!(unit.comment_id.as_deref(), Some("5"));
+        }
     }
 
     #[test]

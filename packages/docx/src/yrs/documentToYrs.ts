@@ -653,19 +653,20 @@ function hyperlinkToUnits(
   hyperlink: Hyperlink,
   styleFormatting: TextFormatting | undefined,
   styleResolver: StyleResolver | null,
-  extraMarks: readonly MarkDescriptor[] = []
+  extraMarks: readonly MarkDescriptor[] = [],
+  commentId?: number
 ): InlineUnit[] {
   const units: InlineUnit[] = [];
   const link = hyperlinkMark(hyperlink);
   for (const child of hyperlink.structuredChildren ?? hyperlink.children) {
     if (child.type === 'run') {
       const marks = [...runMarks(child, styleFormatting, styleResolver), ...extraMarks, link];
-      for (const content of child.content) units.push(...runContentToUnits(content, marks));
+      for (const content of child.content) units.push(...runContentToUnits(content, marks, commentId));
     } else if (child.type === 'simpleField' || child.type === 'complexField') {
       const field = fieldPayload(child, styleFormatting);
-      units.push(embedUnit('field', field.payload, [...field.marks, ...extraMarks, link]));
+      units.push(embedUnit('field', field.payload, [...field.marks, ...extraMarks, link], commentId));
     } else if (child.type === 'mathEquation') {
-      units.push(embedUnit('math', mathPayload(child), [...extraMarks, link]));
+      units.push(embedUnit('math', mathPayload(child), [...extraMarks, link], commentId));
     }
   }
   return units;
@@ -704,11 +705,7 @@ function trackedToUnits(
     if (child.type === 'run') {
       units.push(...runToUnits(child, styleFormatting, styleResolver, commentId, [mark]));
     } else {
-      const linked = hyperlinkToUnits(child, styleFormatting, styleResolver, [mark]);
-      for (const unit of linked) {
-        if (commentId !== undefined) unit.commentId = commentId;
-      }
-      units.push(...linked);
+      units.push(...hyperlinkToUnits(child, styleFormatting, styleResolver, [mark], commentId));
     }
   }
   return units;
@@ -1023,7 +1020,7 @@ function paragraphUnits(
       units.push(...runToUnits(content, styleFormatting, styleResolver, commentId));
     } else if (content.type === 'hyperlink') {
       boundaries = undefined;
-      units.push(...hyperlinkToUnits(content, styleFormatting, styleResolver));
+      units.push(...hyperlinkToUnits(content, styleFormatting, styleResolver, [], commentId));
     } else if (content.type === 'simpleField' || content.type === 'complexField') {
       boundaries = undefined;
       units.push(...fieldToUnits(content, styleFormatting, styleResolver, contentIndex));

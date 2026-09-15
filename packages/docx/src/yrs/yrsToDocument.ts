@@ -995,7 +995,7 @@ function trackedContentForItem(
     : { type: 'deletion', info, content: [run] };
 }
 
-function addToHyperlink(hyperlink: Hyperlink, item: InlineItem): void {
+function addToHyperlink(hyperlink: Hyperlink, item: InlineItem, recovery: ChartRecovery): void {
   if (item.kind === 'text') {
     hyperlink.children.push(createTextRun(item.text, item.attributes));
     return;
@@ -1009,6 +1009,16 @@ function addToHyperlink(hyperlink: Hyperlink, item: InlineItem): void {
     hyperlink.children.push({ type: 'run', content: [{ type: 'tab' }] });
   } else if (item.embedKind === 'horizontalRule') {
     hyperlink.children.push(horizontalRuleRun(item.payload, item.attributes));
+  } else if (item.embedKind === 'image') {
+    hyperlink.children.push(imageRunFromPayload(item.payload));
+  } else if (item.embedKind === 'shape') {
+    hyperlink.children.push(shapeRunFromPayload(item.payload));
+  } else if (item.embedKind === 'chart') {
+    const run = chartRunFromPayload(item.payload, recovery);
+    if (run) hyperlink.children.push(run);
+  } else if (item.embedKind === 'opaqueDrawing') {
+    const run = opaqueDrawingRunFromPayload(item.payload);
+    if (run) hyperlink.children.push(run);
   } else if (item.embedKind === 'field') {
     const child =
       commentReferenceFromPayload(item.payload) ?? fieldFromPayload(item.payload, item.attributes);
@@ -1139,7 +1149,7 @@ function buildParagraphContent(items: InlineItem[], recovery: ChartRecovery): Pa
         flushHyperlink();
         currentHyperlink = createHyperlink(item.attributes);
       }
-      if (currentHyperlink) addToHyperlink(currentHyperlink, item);
+      if (currentHyperlink) addToHyperlink(currentHyperlink, item, recovery);
       continue;
     }
 
