@@ -124,6 +124,41 @@ function chartRunXml(saved: Paragraph): string | undefined {
   return content?.type === 'chart' ? content.chart.drawingXml : undefined;
 }
 
+it('recovers duplicate relationship ids with the first placement', async () => {
+  const first = CHART_DRAWING.replace('cx="5486400"', 'cx="111"');
+  const last = CHART_DRAWING.replace('cx="5486400"', 'cx="999"');
+  const chartWith = (drawingXml?: string): Chart => ({
+    type: 'chart',
+    chartType: 'column',
+    rId: 'rIdDup',
+    path: 'word/charts/chartDup.xml',
+    series: [],
+    ...(drawingXml === undefined ? {} : { drawingXml }),
+  });
+  const document: Document = {
+    package: {
+      document: {
+        content: [
+          chartParagraphWith(chartWith(first)),
+          chartParagraphWith(chartWith(last)),
+          chartParagraphWith(chartWith()),
+        ],
+      },
+    },
+  };
+  const session = await createYrsSession({ clientId: 74033 });
+  try {
+    documentToYrs(session, document);
+    const saved = yrsToDocument(session, document);
+    expect(chartRunXml(saved.package.document.content[0] as Paragraph)).toContain('cx="111"');
+    expect(chartRunXml(saved.package.document.content[1] as Paragraph)).toContain('cx="999"');
+    expect(chartRunXml(saved.package.document.content[2] as Paragraph)).toContain('cx="111"');
+    expect(saved.warnings ?? []).toEqual([]);
+  } finally {
+    session.destroy();
+  }
+});
+
 it('recovers legacy chart placements per story when relationship ids collide', async () => {
   const bodyDrawing = CHART_DRAWING.replace('Chart 1', 'Body chart');
   const headerDrawing = CHART_DRAWING.replace('Chart 1', 'Header chart');

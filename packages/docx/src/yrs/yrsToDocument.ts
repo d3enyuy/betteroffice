@@ -1891,8 +1891,14 @@ function collectChartDrawings(blocks: readonly BlockContent[], into: Map<string,
       for (const run of paragraphChartRuns(block.content)) {
         for (const content of run.content) {
           if (content.type !== 'chart' || !content.chart.drawingXml) continue;
-          if (content.chart.rId !== undefined) into.set(`rId:${content.chart.rId}`, content.chart.drawingXml);
-          if (content.chart.path !== undefined) into.set(`path:${content.chart.path}`, content.chart.drawingXml);
+          if (content.chart.rId !== undefined) {
+            const key = `rId:${content.chart.rId}`;
+            if (!into.has(key)) into.set(key, content.chart.drawingXml);
+          }
+          if (content.chart.path !== undefined) {
+            const key = `path:${content.chart.path}`;
+            if (!into.has(key)) into.set(key, content.chart.drawingXml);
+          }
         }
       }
     } else if (block.type === 'table') {
