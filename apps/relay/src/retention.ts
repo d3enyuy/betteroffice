@@ -19,6 +19,12 @@ export type FrameKind =
   | "invalid"
   | "oversize-awareness";
 
+export interface ClassifiedFrame {
+  kind: FrameKind;
+  hasAwareness: boolean;
+  awarenessBytes: number;
+}
+
 interface DocumentMessage {
   subtype: number;
   payload: Uint8Array;
@@ -145,14 +151,29 @@ function decodeFrame(frame: Uint8Array): DecodedFrame | null {
   return { documents, hasAuth, awarenessBytes };
 }
 
-export function classifyFrame(frame: Uint8Array): FrameKind {
+export function classifyFrame(frame: Uint8Array): ClassifiedFrame {
   const decoded = decodeFrame(frame);
-  if (!decoded) return "invalid";
+  if (!decoded)
+    return { kind: "invalid", hasAwareness: false, awarenessBytes: 0 };
+  const hasAwareness = decoded.awarenessBytes > 0;
   if (decoded.awarenessBytes > MAX_AWARENESS_PAYLOAD_BYTES) {
-    return "oversize-awareness";
+    return {
+      kind: "oversize-awareness",
+      hasAwareness,
+      awarenessBytes: decoded.awarenessBytes,
+    };
   }
-  if (decoded.hasAuth) return "auth";
-  return decoded.documents.length > 0 ? "document" : "transient";
+  if (decoded.hasAuth)
+    return {
+      kind: "auth",
+      hasAwareness,
+      awarenessBytes: decoded.awarenessBytes,
+    };
+  return {
+    kind: decoded.documents.length > 0 ? "document" : "transient",
+    hasAwareness,
+    awarenessBytes: decoded.awarenessBytes,
+  };
 }
 
 function isValidUtf8(bytes: Uint8Array): boolean {

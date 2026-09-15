@@ -17,9 +17,9 @@ interface Env {
 }
 
 const MAX_RETAINED_COUNT = 512;
-/** Providers send transient frames at most every 80ms, so 30/s leaves headroom. */
-const TRANSIENT_RATE_CAPACITY = 30;
-const TRANSIENT_REFILL_PER_SECOND = 30;
+/** Providers send awareness at most every 80ms, so 30/s leaves headroom. */
+const AWARENESS_RATE_CAPACITY = 30;
+const AWARENESS_REFILL_PER_SECOND = 30;
 const UPDATE_PREFIX = "update:";
 const SEQ_DIGITS = 16;
 const LEGACY_LOG_KEY = "updates";
@@ -28,7 +28,7 @@ const TTL_REFRESH_SLACK_MS = 60 * 60 * 1000;
 
 type PeerMessage = { type: "peers"; count: number };
 
-interface TransientBucket {
+interface AwarenessBucket {
   tokens: number;
   updatedAt: number;
 }
@@ -63,7 +63,7 @@ export class CollaborationRoom extends DurableObject<Env> {
   );
   private persist = Promise.resolve();
   private expiresAt: number | null = null;
-  private transientBuckets = new Map<WebSocket, TransientBucket>();
+  private awarenessBuckets = new Map<WebSocket, AwarenessBucket>();
 
   constructor(state: DurableObjectState, env: Env) {
     super(state, env);
@@ -122,7 +122,7 @@ export class CollaborationRoom extends DurableObject<Env> {
       return;
     }
 
-    const kind = classifyFrame(bytes);
+    const { kind, hasAwareness } = classifyFrame(bytes);
     if (kind === "invalid") {
       socket.close(1002, "Malformed collaboration frame");
       return;
@@ -135,8 +135,8 @@ export class CollaborationRoom extends DurableObject<Env> {
       socket.close(1008, "Auth messages are server-only");
       return;
     }
-    if (kind === "transient" && !this.consumeTransientToken(socket)) {
-      socket.close(1008, "Transient frame rate exceeded");
+    if (hasAwareness && !this.consumeAwarenessToken(socket)) {
+      socket.close(1008, "Awareness frame rate exceeded");
       return;
     }
 
@@ -156,13 +156,13 @@ export class CollaborationRoom extends DurableObject<Env> {
     reason: string,
     _wasClean: boolean,
   ): void {
-    this.transientBuckets.delete(socket);
+    this.awarenessBuckets.delete(socket);
     socket.close(code, reason);
     this.broadcastPeerCount();
   }
 
   webSocketError(socket: WebSocket, _error: unknown): void {
-    this.transientBuckets.delete(socket);
+    this.awarenessBuckets.delete(socket);
     socket.close(1011, "WebSocket error");
     this.broadcastPeerCount();
   }
@@ -200,18 +200,18 @@ export class CollaborationRoom extends DurableObject<Env> {
     this.ctx.waitUntil(this.persist);
   }
 
-  private consumeTransientToken(socket: WebSocket): boolean {
+  private consumeAwarenessToken(socket: WebSocket): boolean {
     const now = Date.now();
-    let bucket = this.transientBuckets.get(socket);
+    let bucket = this.awarenessBuckets.get(socket);
     if (!bucket) {
-      bucket = { tokens: TRANSIENT_RATE_CAPACITY, updatedAt: now };
-      this.transientBuckets.set(socket, bucket);
+      bucket = { tokens: AWARENESS_RATE_CAPACITY, updatedAt: now };
+      this.awarenessBuckets.set(socket, bucket);
     } else {
       const elapsed = (now - bucket.updatedAt) / 1000;
       if (elapsed > 0) {
         bucket.tokens = Math.min(
-          TRANSIENT_RATE_CAPACITY,
-          bucket.tokens + elapsed * TRANSIENT_REFILL_PER_SECOND,
+          AWARENESS_RATE_CAPACITY,
+          bucket.tokens + elapsed * AWARENESS_REFILL_PER_SECOND,
         );
         bucket.updatedAt = now;
       }

@@ -102,7 +102,8 @@ mints `crypto.randomUUID()`), treat a shared link as shared access, and add
 authentication before resolving a room in production.
 
 The relay validates framing only: sync-v1 structure, the 16 MiB frame cap, a
-32 KiB awareness payload cap, and a per-socket transient-frame rate limit. It
+32 KiB awareness payload cap, and a per-socket rate limit on frames carrying
+awareness. It
 never parses Office files and never validates CRDT payloads; update validity is
 enforced inside the engine, which applies remote updates to a staged clone and
 adopts them only if valid.

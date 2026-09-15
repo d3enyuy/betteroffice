@@ -17,8 +17,8 @@ WebSockets connect at `/room/:roomId`. `GET /` returns `ok` for health checks.
 
 - 16 MiB maximum frame (`MAX_COLLABORATION_FRAME_BYTES`).
 - 512 frames or 64 MiB of retained history per room; join replay capped at 64 MiB.
-- 32 KiB awareness payload per frame; transient frames rate-limited per socket
-  (1009 close on oversize, 1008 close on rate abuse).
+- 32 KiB awareness payload per frame; frames carrying awareness rate-limited
+  per socket (1009 close on oversize, 1008 close on rate abuse).
 
 ## Threat model
 

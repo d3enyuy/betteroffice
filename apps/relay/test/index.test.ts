@@ -269,6 +269,50 @@ describe("CollaborationRoom.webSocketMessage", () => {
     expect(harness.peer.send).toHaveBeenCalledTimes(30);
   });
 
+  test("closes the sender on oversize awareness inside a mixed frame", async () => {
+    const document = Uint8Array.of(0, 2, 1, 7);
+    const payload = new Uint8Array(MAX_AWARENESS_PAYLOAD_BYTES + 1);
+    const mixed = frame(
+      document,
+      encodeVarUint(1),
+      encodeVarUint(payload.byteLength),
+      payload,
+    );
+    const harness = createRoom();
+    await harness.initialization;
+
+    harness.room.webSocketMessage(
+      harness.sender as never,
+      mixed.buffer as ArrayBuffer,
+    );
+
+    expect(harness.sender.close).toHaveBeenCalledTimes(1);
+    expect(harness.sender.close.mock.calls[0][0]).toBe(1009);
+    expect(harness.peer.send).not.toHaveBeenCalled();
+    expect(harness.peer.close).not.toHaveBeenCalled();
+    expect(harness.rows.size).toBe(0);
+  });
+
+  test("closes the sender on a mixed document-awareness flood", async () => {
+    const mixed = frame(
+      Uint8Array.of(0, 2, 1, 9),
+      Uint8Array.of(1, 1, 12),
+    );
+    const harness = createRoom();
+    await harness.initialization;
+
+    for (let index = 0; index < 31; index += 1) {
+      harness.room.webSocketMessage(
+        harness.sender as never,
+        mixed.buffer as ArrayBuffer,
+      );
+    }
+
+    expect(harness.sender.close).toHaveBeenCalledTimes(1);
+    expect(harness.sender.close.mock.calls[0][0]).toBe(1008);
+    expect(harness.peer.send).toHaveBeenCalledTimes(30);
+  });
+
   test("does not rate-limit document bursts", async () => {
     const harness = createRoom();
     await harness.initialization;
