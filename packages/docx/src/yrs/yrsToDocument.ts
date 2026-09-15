@@ -963,16 +963,18 @@ function trackedContentForItem(
   item: InlineItem,
   info: TrackedChangeInfo,
   recovery: ChartRecovery
-): ParagraphContent {
+): ParagraphContent | null {
   let run: Run;
   if (item.kind === 'embed' && item.embedKind === 'image') run = imageRunFromPayload(item.payload);
   else if (item.kind === 'embed' && item.embedKind === 'horizontalRule')
     run = horizontalRuleRun(item.payload, item.attributes);
   else if (item.kind === 'embed' && item.embedKind === 'shape')
     run = shapeRunFromPayload(item.payload);
-  else if (item.kind === 'embed' && item.embedKind === 'chart')
-    run = chartRunFromPayload(item.payload, recovery) ?? { type: 'run', content: [] };
-  else if (item.kind === 'embed' && item.embedKind === 'opaqueDrawing')
+  else if (item.kind === 'embed' && item.embedKind === 'chart') {
+    const chart = chartRunFromPayload(item.payload, recovery);
+    if (!chart) return null;
+    run = chart;
+  } else if (item.kind === 'embed' && item.embedKind === 'opaqueDrawing')
     run = opaqueDrawingRunFromPayload(item.payload) ?? { type: 'run', content: [] };
   else if (item.kind === 'text') {
     const formatting = attrsToTextFormatting(formattingAttrs(item.attributes));
@@ -1135,7 +1137,8 @@ function buildParagraphContent(items: InlineItem[], recovery: ChartRecovery): Pa
     if (revision) {
       flushRun();
       flushHyperlink();
-      content.push(trackedContentForItem(item, revision, recovery));
+      const tracked = trackedContentForItem(item, revision, recovery);
+      if (tracked) content.push(tracked);
       continue;
     }
 

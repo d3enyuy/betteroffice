@@ -159,6 +159,40 @@ it('recovers duplicate relationship ids with the first placement', async () => {
   }
 });
 
+it('drops an unrecoverable chart inside tracked changes instead of an empty wrapper', async () => {
+  const chart: Chart = { type: 'chart', chartType: 'column', rId: 'rIdNope', series: [] };
+  const document: Document = {
+    package: {
+      document: {
+        content: [
+          {
+            type: 'paragraph',
+            paraId: '00000001',
+            content: [
+              {
+                type: 'insertion',
+                info: { id: 1, author: 'Ada' },
+                content: [{ type: 'run', content: [{ type: 'chart', chart }] }],
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  const session = await createYrsSession({ clientId: 74034 });
+  try {
+    documentToYrs(session, document);
+    const saved = yrsToDocument(session, document);
+    const paragraph = saved.package.document.content[0];
+    expect(paragraph?.type).toBe('paragraph');
+    if (paragraph?.type === 'paragraph') expect(paragraph.content).toEqual([]);
+    expect(saved.warnings?.join('\n')).toContain('rIdNope');
+  } finally {
+    session.destroy();
+  }
+});
+
 it('recovers legacy chart placements per story when relationship ids collide', async () => {
   const bodyDrawing = CHART_DRAWING.replace('Chart 1', 'Body chart');
   const headerDrawing = CHART_DRAWING.replace('Chart 1', 'Header chart');
