@@ -12,7 +12,7 @@ use crate::inline::{
     ContentPosition, Hyperlink, InlineNode, InlineSdt, InlineSdtType, MathEquation, MathType,
     OpenComplexField, Run, RunContent, SimpleField, SimpleFieldType, StructuredFieldContent,
     StructuredFieldTree, parse_bookmark_end, parse_bookmark_start, parse_field_type,
-    parse_hyperlink, parse_run, parse_sdt_properties,
+    parse_hyperlink, parse_run, parse_sdt_properties, run_content_length,
 };
 use crate::media::MediaMap;
 use crate::numbering::{ListRendering, NumberingMap, compute_list_rendering};
@@ -1257,20 +1257,7 @@ fn paragraph_content_length(content: &ParagraphContent) -> usize {
 fn inline_node_length(node: &InlineNode) -> usize {
     match node {
         InlineNode::RawXml(_) => 0,
-        InlineNode::Run(run) => run
-            .content
-            .iter()
-            .map(|content| match content {
-                RunContent::Text { text, .. } | RunContent::InstrText { text } => {
-                    text.encode_utf16().count()
-                }
-                RunContent::Tab
-                | RunContent::SoftHyphen
-                | RunContent::NoBreakHyphen
-                | RunContent::Symbol { .. } => 1,
-                _ => 0,
-            })
-            .sum(),
+        InlineNode::Run(run) => run.content.iter().map(run_content_length).sum(),
         InlineNode::Hyperlink(hyperlink) => hyperlink
             .children
             .iter()
@@ -1292,11 +1279,7 @@ fn inline_node_length(node: &InlineNode) -> usize {
             .map(|node| inline_node_length(&node))
             .sum(),
         InlineNode::InlineSdt(sdt) => sdt.content.iter().map(inline_node_length).sum(),
-        InlineNode::Math(math) => math
-            .plain_text
-            .as_deref()
-            .map(|text| text.encode_utf16().count())
-            .unwrap_or(0),
+        InlineNode::Math(_) => 1,
         InlineNode::BookmarkStart(_) | InlineNode::BookmarkEnd(_) => 0,
     }
 }
@@ -1706,6 +1689,39 @@ mod tests {
             panic!("bookmark end")
         };
         assert_eq!(end.position.as_ref().unwrap().offset, Some(5.0));
+    }
+
+    #[test]
+    fn embeds_count_as_one_unit_in_marker_offsets() {
+        let paragraph = parse(
+            r#"<w:p xmlns:w="w" xmlns:o="urn:schemas-microsoft-com:office:office">
+              <w:r><w:t>ab</w:t></w:r>
+              <w:r><w:object><o:OLEObject Type="Embed" ProgID="Equation.DSMT4" ShapeID="_1" DrawAspect="Content" ObjectID="_1"/></w:object></w:r>
+              <w:r><w:t>cd</w:t></w:r>
+              <w:bookmarkStart w:id="7" w:name="afterOpaque"/>
+              <w:r><w:t>ef</w:t></w:r>
+              <w:bookmarkEnd w:id="7"/>
+              <w:commentRangeStart w:id="9"/>
+              <w:r><w:footnoteReference w:id="2"/></w:r>
+              <w:r><w:br/></w:r>
+              <w:commentRangeEnd w:id="9"/>
+            </w:p>"#,
+        );
+        let offsets: Vec<f64> = paragraph
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                ParagraphContent::Inline(InlineNode::BookmarkStart(bookmark)) => {
+                    bookmark.position.as_ref()?.offset
+                }
+                ParagraphContent::Inline(InlineNode::BookmarkEnd(bookmark)) => {
+                    bookmark.position.as_ref()?.offset
+                }
+                ParagraphContent::CommentRange(marker) => marker.offset,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(offsets, [5.0, 7.0, 7.0, 9.0]);
     }
 
     fn run_texts(paragraph: &Paragraph) -> Vec<&str> {

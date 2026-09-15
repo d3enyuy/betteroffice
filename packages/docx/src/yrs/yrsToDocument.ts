@@ -1271,14 +1271,20 @@ function runTextLength(run: Run): number {
   return run.content.reduce((length, content) => {
     if (content.type === 'text' || content.type === 'instrText')
       return length + content.text.length;
-    if (content.type === 'symbol') return length + content.char.length;
+    if (content.type === 'symbol') return length + 1;
+    if (content.type === 'break')
+      return length + (content.breakType === undefined || content.breakType === 'textWrapping' ? 1 : 0);
     if (
       content.type === 'tab' ||
       content.type === 'softHyphen' ||
       content.type === 'noBreakHyphen' ||
       content.type === 'footnoteRef' ||
       content.type === 'endnoteRef' ||
+      content.type === 'commentReference' ||
+      content.type === 'drawing' ||
+      content.type === 'shape' ||
       content.type === 'horizontalRule' ||
+      content.type === 'chart' ||
       content.type === 'opaqueDrawing'
     ) {
       return length + 1;
@@ -1311,7 +1317,7 @@ function paragraphContentLength(content: ParagraphContent): number {
         0
       );
     case 'mathEquation':
-      return content.plainText?.length ?? 0;
+      return 1;
     default:
       return 0;
   }
