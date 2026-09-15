@@ -230,6 +230,41 @@ fn utf16_len(value: &str) -> u32 {
     value.encode_utf16().count() as u32
 }
 
+/// Aggregate cap, in xml bytes, for opaque drawing payloads copied into yrs
+/// state while seeding. Opaque markup replays verbatim through JSON raw ops
+/// and yrs map values, so uncapped documents multiply memory once per layer.
+/// Both seeders enforce this constant and refuse over-budget documents
+/// instead of silently dropping content.
+pub const OPAQUE_SEED_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
+
+pub fn opaque_seed_budget_exceeded(total: u64) -> String {
+    format!(
+        "opaque drawing seed budget exceeded ({} bytes of opaque xml, budget {} bytes)",
+        total, OPAQUE_SEED_BUDGET_BYTES
+    )
+}
+
+pub fn is_opaque_seed_budget_error(message: &str) -> bool {
+    message.starts_with("opaque drawing seed budget exceeded")
+}
+
+fn opaque_xml_bytes(value: &Value) -> u64 {
+    match value {
+        Value::Array(items) => items.iter().map(opaque_xml_bytes).sum(),
+        Value::Object(map) => {
+            let own = match map.get("type").and_then(Value::as_str) {
+                Some("opaqueDrawing") => map
+                    .get("xml")
+                    .and_then(Value::as_str)
+                    .map_or(0, |xml| xml.len() as u64),
+                _ => 0,
+            };
+            own + map.values().map(opaque_xml_bytes).sum::<u64>()
+        }
+        _ => 0,
+    }
+}
+
 fn ordered_object(
     entries: impl IntoIterator<Item = (impl Into<String>, Value)>,
 ) -> Vec<(String, Value)> {
@@ -3340,6 +3375,10 @@ pub(crate) fn seed_parsed_docx(
     let mut referenced_fonts = BTreeSet::new();
     collect_font_table_fonts(&envelope, &mut referenced_fonts);
     let parsed = serde_json::to_value(&envelope.document).map_err(|error| error.to_string())?;
+    let opaque_total = opaque_xml_bytes(&parsed);
+    if opaque_total > OPAQUE_SEED_BUDGET_BYTES {
+        return Err(opaque_seed_budget_exceeded(opaque_total));
+    }
     collect_fonts_from_value(&parsed, &mut referenced_fonts);
     let source_json = if needs_source_json(&parsed) {
         let serialized =
