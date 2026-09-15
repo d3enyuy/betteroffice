@@ -79,6 +79,7 @@ interface YrsImageAttrs {
   cropRight?: number;
   cropBottom?: number;
   cropLeft?: number;
+  shapeType?: string;
   opacity?: number;
   layoutInCell?: boolean;
   allowOverlap?: boolean;
@@ -633,6 +634,7 @@ function imageRunFromPayload(payload: Attrs): Run {
     src: asString(attrs.src) || '',
     alt: asString(attrs.alt) || undefined,
     title: asString(attrs.title) || undefined,
+    shapeType: asString(attrs.shapeType) || undefined,
     size: {
       width: pixelsToEmu(Number(attrs.width) || 0),
       height: pixelsToEmu(Number(attrs.height) || 0),
