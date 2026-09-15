@@ -168,6 +168,42 @@ pub fn write_docx_s13_with_warnings(
 
     serialize_comment_parts(&request.document, &mut package, &mut context);
 
+    let document_rels = package
+        .text(&package.document_relationships_path)
+        .unwrap_or_default();
+    warn_about_dangling_opaque_refs(
+        &request.document.content,
+        &document_rels,
+        &package.document_relationships_path,
+        &mut context,
+    );
+    for entries in [&request.header_entries, &request.footer_entries] {
+        for (relationship_id, story) in entries {
+            let Some(relationship) = relationships.get(relationship_id) else {
+                continue;
+            };
+            let Ok(rels_path) = owner_relationships_path(&package, &relationship.target) else {
+                continue;
+            };
+            let rels_xml = package.text(&rels_path).unwrap_or_default();
+            warn_about_dangling_opaque_refs(&story.content, &rels_xml, &rels_path, &mut context);
+        }
+    }
+    for (notes, rels_path) in [
+        (
+            &request.footnote_separators,
+            "word/_rels/footnotes.xml.rels",
+        ),
+        (&request.footnotes, "word/_rels/footnotes.xml.rels"),
+        (&request.endnote_separators, "word/_rels/endnotes.xml.rels"),
+        (&request.endnotes, "word/_rels/endnotes.xml.rels"),
+    ] {
+        let rels_xml = package.text(rels_path).unwrap_or_default();
+        for note in notes {
+            warn_about_dangling_opaque_refs(&note.content, &rels_xml, rels_path, &mut context);
+        }
+    }
+
     if request.selective.is_none() {
         let mut footnotes = request.footnote_separators;
         footnotes.extend(request.footnotes);
@@ -716,6 +752,94 @@ fn append_before(xml: &str, closing: &str, value: &str) -> Option<String> {
     updated.push_str(value);
     updated.push_str(&xml[offset..]);
     Some(updated)
+}
+
+fn opaque_relationship_references(xml: &str) -> Vec<&str> {
+    let mut references = Vec::new();
+    for marker in ["r:embed=\"", "r:id=\""] {
+        let mut cursor = 0usize;
+        while cursor < xml.len() {
+            let Some(relative) = xml[cursor..].find(marker) else {
+                break;
+            };
+            let start = cursor + relative + marker.len();
+            let end = start + xml[start..].find('"').unwrap_or(xml.len() - start);
+            if end > start {
+                references.push(&xml[start..end]);
+            }
+            cursor = end + 1;
+        }
+    }
+    references
+}
+
+fn visit_opaque_drawings(blocks: &[BlockContent], visit: &mut impl FnMut(&str)) {
+    fn visit_run(run: &Run, visit: &mut impl FnMut(&str)) {
+        for content in &run.content {
+            if let RunContent::OpaqueDrawing { xml, .. } = content {
+                visit(xml);
+            }
+        }
+    }
+    fn visit_inline(node: &InlineNode, visit: &mut impl FnMut(&str)) {
+        match node {
+            InlineNode::Run(run) => visit_run(run, visit),
+            InlineNode::Hyperlink(hyperlink) => {
+                for child in hyperlink
+                    .children
+                    .iter()
+                    .chain(hyperlink.structured_children.iter().flatten())
+                {
+                    visit_inline(child, visit);
+                }
+            }
+            _ => {}
+        }
+    }
+    for block in blocks {
+        match block {
+            BlockContent::Paragraph(paragraph) => {
+                for content in &paragraph.content {
+                    match content {
+                        ParagraphContent::Inline(node) => visit_inline(node, visit),
+                        ParagraphContent::Tracked(tracked) => {
+                            for inline in &tracked.content {
+                                visit_inline(inline, visit);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            BlockContent::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        visit_opaque_drawings(&cell.content, visit);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn warn_about_dangling_opaque_refs(
+    blocks: &[BlockContent],
+    rels_xml: &str,
+    rels_path: &str,
+    context: &mut SerializerContext,
+) {
+    let mut reported = HashSet::new();
+    visit_opaque_drawings(blocks, &mut |xml| {
+        for id in opaque_relationship_references(xml) {
+            if rels_xml.contains(&format!("Id=\"{id}\"")) || !reported.insert(id.to_owned()) {
+                continue;
+            }
+            context.warn(format!(
+                "opaque drawing references relationship {id:?} absent from {rels_path}; keeping the markup verbatim"
+            ));
+        }
+    });
 }
 
 fn find_max_relationship_id(xml: &str) -> u64 {
@@ -1835,6 +1959,40 @@ mod tests {
         let document = String::from_utf8(part_map(&saved)["word/document.xml"].clone()).unwrap();
         assert!(document.contains("<w:t>new</w:t>"));
         assert!(document.contains(drawing));
+    }
+
+    #[test]
+    fn opaque_drawings_reference_missing_relationships_with_a_warning() {
+        let original = base_package(
+            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>old</w:t></w:r></w:p></w:body></w:document>",
+        );
+        let request: S13SaveRequest = serde_json::from_value(json!({
+            "determinism": determinism(),
+            "document": { "content": [
+                text_paragraph("new", None),
+                {
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "run",
+                        "content": [{
+                            "type": "opaqueDrawing",
+                            "kind": "object",
+                            "xml": "<w:object><o:OLEObject Type=\"Embed\" ProgID=\"Eq\" r:id=\"rIdOle\"/></w:object>"
+                        }]
+                    }]
+                }
+            ] },
+            "options": { "updateModifiedDate": false }
+        }))
+        .expect("request");
+        let (saved, warnings) = write_docx_s13_with_warnings(request, &original).expect("save");
+        assert!(
+            warnings.iter().any(|warning| warning.contains("rIdOle")),
+            "{warnings:?}"
+        );
+        let document = String::from_utf8(part_map(&saved)["word/document.xml"].clone()).unwrap();
+        assert!(document.contains("<w:t>new</w:t>"));
+        assert!(document.contains("rIdOle"));
     }
 
     #[test]

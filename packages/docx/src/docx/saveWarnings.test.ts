@@ -1,6 +1,7 @@
 import { beforeAll, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { parseDocx } from './parser';
 import { preloadEditWasm } from '../wasm/edit';
 import { documentToYrs } from '../yrs/documentToYrs';
 import { createYrsSession } from '../yrs/index';
@@ -60,6 +61,26 @@ it('production save results surface dropped chart runs instead of swallowing the
     const rust = await writeDocumentWithRust(saved, fixture().buffer as ArrayBuffer);
     expect(rust.buffer.byteLength).toBeGreaterThan(0);
     expect(rust.warnings.join('\n')).toContain('rIdNope');
+  } finally {
+    session.destroy();
+  }
+});
+
+it('production saves warn about opaque drawings referencing missing relationships', async () => {
+  const parts = new Map<string, Uint8Array>();
+  const set = (name: string, xml: string) => parts.set(name, toBytes(xml));
+  set('[Content_Types].xml', `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${OFFICE_DOC}.wordprocessingml.document.main+xml"/></Types>`);
+  set('_rels/.rels', `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`);
+  set('word/_rels/document.xml.rels', `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`);
+  set('word/document.xml', `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:o="urn:schemas-microsoft-com:office:office"><w:body><w:p><w:r><w:object><o:OLEObject Type="Embed" ProgID="Eq" r:id="rIdOle"/></w:object></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>`);
+  const bytes = new Uint8Array(rezipPartsToArrayBuffer(parts));
+  const parsed = await parseDocx(bytes.buffer, { preloadFonts: false });
+  const session = await createYrsSession({ clientId: 74512 });
+  try {
+    documentToYrs(session, parsed);
+    const saved = yrsToDocument(session, parsed);
+    const result = await writeDocumentWithRust(saved, bytes.buffer as ArrayBuffer);
+    expect(result.warnings.join('\n')).toContain('rIdOle');
   } finally {
     session.destroy();
   }
