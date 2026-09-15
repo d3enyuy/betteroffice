@@ -1366,6 +1366,16 @@ fn run_content_to_units(
             None,
             1,
         )],
+        "opaqueDrawing" => vec![embed_unit(
+            "opaqueDrawing",
+            map_from_value(json!({
+                "kind": field(Some(content), "kind").cloned().unwrap_or(Value::Null),
+                "xml": field(Some(content), "xml").cloned().unwrap_or(Value::Null),
+            })),
+            hidden_marks(marks),
+            None,
+            1,
+        )],
         "footnoteRef" => field(Some(content), "id")
             .map(|id| note_ref_unit(id, "footnote", marks, comment_id))
             .into_iter()
@@ -3845,6 +3855,68 @@ mod tests {
         assert_eq!(boundaries[0]["text"], "A\t\u{00ad}");
         assert_eq!(boundaries[0]["marksKey"], "bold:{}");
         assert_eq!(boundaries[1]["text"], "12");
+    }
+
+    #[test]
+    fn opaque_drawings_seed_one_opaque_unit_and_lower_without_a_run() {
+        let styles = StyleResolver::new(None);
+        let xml = "<w:object><o:OLEObject/></w:object>";
+        let (units, _) = paragraph_units(
+            &json!({"content": [{
+                "type": "run",
+                "content": [
+                    {"type": "text", "text": "A"},
+                    {"type": "opaqueDrawing", "kind": "object", "xml": xml},
+                ],
+            }]}),
+            &styles,
+            None,
+            &BTreeMap::new(),
+        );
+        assert_eq!(units.len(), 2);
+        let UnitContent::Embed { kind, payload } = &units[1].content else {
+            panic!("opaque drawing must seed an embed unit");
+        };
+        assert_eq!(kind, "opaqueDrawing");
+        assert_eq!(payload["kind"], json!("object"));
+        assert_eq!(payload["xml"], json!(xml));
+        assert_eq!(units[1].pm_size, 1);
+
+        let mut context = LoweringContext {
+            styles: StyleResolver::new(None),
+            theme: None,
+            source_json: Arc::new(BTreeMap::new()),
+            plans: Vec::new(),
+        };
+        visit_story(
+            &mut context,
+            "body".to_owned(),
+            &[json!({"type":"paragraph","paraId":"opaque","content": [{
+                "type": "run",
+                "content": [{"type": "opaqueDrawing", "kind": "object", "xml": xml}],
+            }]})],
+            StoryOptions {
+                include_page_breaks: true,
+                append_body_tail: false,
+                seed_comments: false,
+            },
+        );
+        let document = EditingDoc::new(74102);
+        let (story, ops, _) = seed_plan(context.plans.pop().unwrap()).unwrap();
+        document.create_empty_stories(&[story.clone()]).unwrap();
+        document
+            .apply_raw_story_batches(
+                vec![(story, ops)],
+                &EditCtx::local(String::new(), String::new()),
+            )
+            .unwrap();
+        let blocks = crate::bridge::yrs_doc_to_layout_blocks(
+            &document,
+            "body",
+            &crate::bridge::RenderEnv::default(),
+        )
+        .unwrap();
+        assert_eq!(blocks.len(), 1);
     }
 
     #[test]

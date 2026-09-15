@@ -980,9 +980,21 @@ pub(crate) fn parse_run_composed(
                 budget,
                 drawing.as_deref_mut(),
             )?),
-            "AlternateContent" if contains_drawing_owned_content(child) => replacements.push(
-                parse_alternate_content(child, relationships, budget, drawing.as_deref_mut())?,
-            ),
+            "AlternateContent" if contains_drawing_owned_content(child) => {
+                let parsed =
+                    parse_alternate_content(child, relationships, budget, drawing.as_deref_mut())?;
+                let modeled = parsed
+                    .iter()
+                    .any(|content| !matches!(content, RunContent::OpaqueDrawing { .. }));
+                if !modeled && !alternate_content_has_text_box(child) {
+                    replacements.push(vec![RunContent::OpaqueDrawing {
+                        kind: "alternateContent".to_owned(),
+                        xml: child.to_raw_inline_xml(),
+                    }]);
+                } else {
+                    replacements.push(parsed);
+                }
+            }
             _ => {}
         }
     }
@@ -1012,12 +1024,18 @@ fn parse_drawing_owned(
             }]);
         }
         let media = drawing.as_ref().map(|context| context.media);
-        return Ok(parse_vml_image_content(element, relationships, media)
-            .map(|image| RunContent::Drawing {
+        if let Some(image) = parse_vml_image_content(element, relationships, media) {
+            return Ok(vec![RunContent::Drawing {
                 image: Box::new(image),
-            })
-            .into_iter()
-            .collect());
+            }]);
+        }
+        if !has_vml_image_data(element, 0) {
+            return Ok(vec![RunContent::OpaqueDrawing {
+                kind: element.local_name().to_owned(),
+                xml: element.to_raw_inline_xml(),
+            }]);
+        }
+        return Ok(Vec::new());
     }
     if is_text_box_drawing(element) {
         return Ok(Vec::new());
@@ -1079,13 +1097,18 @@ fn parse_alternate_content(
     budget: &mut ParseBudget<'_>,
     mut drawing: Option<&mut DrawingContext<'_>>,
 ) -> Result<Vec<RunContent>, ParseError> {
+    let mut saw_text_box = false;
     for branch_name in ["Choice", "Fallback"] {
         for branch in element
             .child_elements()
             .filter(|branch| branch.local_name() == branch_name)
         {
             let mut parsed = Vec::new();
+            let mut branch_text_box = false;
             for child in branch.child_elements() {
+                if child.local_name() == "drawing" && is_text_box_drawing(child) {
+                    branch_text_box = true;
+                }
                 if matches!(child.local_name(), "drawing" | "pict" | "object") {
                     parsed.extend(parse_drawing_owned(
                         child,
@@ -1096,8 +1119,18 @@ fn parse_alternate_content(
                 }
             }
             if !parsed.is_empty() {
+                if saw_text_box {
+                    parsed.retain(|content| {
+                        !matches!(
+                            content,
+                            RunContent::OpaqueDrawing { kind, .. }
+                                if kind == "pict" || kind == "object"
+                        )
+                    });
+                }
                 return Ok(parsed);
             }
+            saw_text_box |= branch_text_box;
         }
     }
     Ok(Vec::new())
@@ -1107,6 +1140,24 @@ fn contains_drawing_owned_content(element: &XmlElement) -> bool {
     element.child_elements().any(|child| {
         matches!(child.local_name(), "drawing" | "pict" | "object")
             || contains_drawing_owned_content(child)
+    })
+}
+
+fn has_vml_image_data(element: &XmlElement, depth: usize) -> bool {
+    if depth > 64 {
+        return false;
+    }
+    element
+        .child_elements()
+        .any(|child| child.local_name() == "imagedata" || has_vml_image_data(child, depth + 1))
+}
+
+fn alternate_content_has_text_box(element: &XmlElement) -> bool {
+    element.child_elements().any(|branch| {
+        matches!(branch.local_name(), "Choice" | "Fallback")
+            && branch
+                .child_elements()
+                .any(|child| child.local_name() == "drawing" && is_text_box_drawing(child))
     })
 }
 
@@ -1531,6 +1582,55 @@ mod tests {
             0,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn unmodeled_drawings_survive_as_opaque_drawings() {
+        let paragraph = parse(
+            r#"<w:p xmlns:w="w" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:v="urn:schemas-microsoft-com:vml">
+              <w:r><w:object><o:OLEObject Type="Embed" ProgID="Equation.DSMT4" ShapeID="_1" DrawAspect="Content" ObjectID="_1"/></w:object></w:r>
+              <w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:pict><v:rect style="width:10pt;height:10pt"/></w:pict></mc:Choice><mc:Fallback><w:pict><v:rect style="width:10pt;height:10pt"/></w:pict></mc:Fallback></mc:AlternateContent></w:r>
+            </w:p>"#,
+        );
+        let kinds: Vec<_> = paragraph
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                ParagraphContent::Inline(InlineNode::Run(run)) => Some(run),
+                _ => None,
+            })
+            .flat_map(|run| run.content.iter())
+            .filter_map(|content| match content {
+                RunContent::OpaqueDrawing { kind, xml } => Some((kind.as_str(), xml.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds.len(), 2);
+        assert_eq!(kinds[0].0, "object");
+        assert!(kinds[0].1.contains("OLEObject"));
+        assert_eq!(kinds[1].0, "alternateContent");
+        assert!(kinds[1].1.contains("AlternateContent"));
+    }
+
+    #[test]
+    fn image_like_pict_and_textbox_drawings_stay_dropped() {
+        let paragraph = parse(
+            r#"<w:p xmlns:w="w" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="r" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+              <w:r><w:pict><v:shape style="width:72pt;height:36pt"><v:imagedata r:id=""/></v:shape></w:pict></w:r>
+              <w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="41" name="Text Box 41"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr><wps:txbx><w:txbxContent><w:p><w:r><w:t>inner</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr rot="0" vert="horz"/></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>
+            </w:p>"#,
+        );
+        for content in &paragraph.content {
+            let ParagraphContent::Inline(InlineNode::Run(run)) = content else {
+                panic!("expected runs");
+            };
+            assert!(
+                run.content
+                    .iter()
+                    .all(|content| !matches!(content, RunContent::OpaqueDrawing { .. })),
+                "image-like and textbox drawings keep their existing owners"
+            );
+        }
     }
 
     #[test]

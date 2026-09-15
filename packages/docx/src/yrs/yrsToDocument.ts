@@ -737,6 +737,13 @@ function chartRunFromPayload(payload: Attrs): Run | null {
   }
 }
 
+function opaqueDrawingRunFromPayload(payload: Attrs): Run | null {
+  const kind = asString(payload.kind);
+  const xml = asString(payload.xml);
+  if (!kind || !xml) return null;
+  return { type: 'run', content: [{ type: 'opaqueDrawing', kind, xml }] };
+}
+
 function shapeRunFromPayload(payload: Attrs): Run {
   const shape: Shape = storedShape(payload.shapeJson) ?? {
     type: 'shape',
@@ -916,6 +923,8 @@ function ordinaryContentForItem(item: InlineItem): ParagraphContent | null {
       return shapeRunFromPayload(item.payload);
     case 'chart':
       return chartRunFromPayload(item.payload);
+    case 'opaqueDrawing':
+      return opaqueDrawingRunFromPayload(item.payload);
     case 'field':
       return (
         commentReferenceFromPayload(item.payload) ?? fieldFromPayload(item.payload, item.attributes)
@@ -950,6 +959,8 @@ function trackedContentForItem(item: InlineItem, info: TrackedChangeInfo): Parag
     run = shapeRunFromPayload(item.payload);
   else if (item.kind === 'embed' && item.embedKind === 'chart')
     run = chartRunFromPayload(item.payload) ?? { type: 'run', content: [] };
+  else if (item.kind === 'embed' && item.embedKind === 'opaqueDrawing')
+    run = opaqueDrawingRunFromPayload(item.payload) ?? { type: 'run', content: [] };
   else if (item.kind === 'text') {
     const formatting = attrsToTextFormatting(formattingAttrs(item.attributes));
     run = {
@@ -1254,7 +1265,8 @@ function runTextLength(run: Run): number {
       content.type === 'noBreakHyphen' ||
       content.type === 'footnoteRef' ||
       content.type === 'endnoteRef' ||
-      content.type === 'horizontalRule'
+      content.type === 'horizontalRule' ||
+      content.type === 'opaqueDrawing'
     ) {
       return length + 1;
     }
