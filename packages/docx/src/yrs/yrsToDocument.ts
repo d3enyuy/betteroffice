@@ -29,6 +29,7 @@ import type {
   HorizontalRuleContent,
   TextFormatting,
   Hyperlink,
+  HyperlinkContent,
   TrackedChangeInfo,
   Table,
   TableRow,
@@ -725,12 +726,20 @@ function storedShape(value: unknown): Shape | undefined {
   }
 }
 
-function chartRunFromPayload(payload: Attrs): Run | null {
+function chartRunFromPayload(payload: Attrs, recovery: ChartRecovery): Run | null {
   const json = asString(payload.chartJson);
   if (!json) return null;
   try {
     const chart = JSON.parse(json) as Chart;
     if (chart?.type !== 'chart' || typeof chart.chartType !== 'string') return null;
+    if (!chart.drawingXml) {
+      const drawingXml = recovery.drawingFor(chart.rId, chart.path);
+      if (!drawingXml) {
+        recovery.unrecoverable(chart.rId, chart.path);
+        return null;
+      }
+      chart.drawingXml = drawingXml;
+    }
     return { type: 'run', content: [{ type: 'chart', chart }] };
   } catch {
     return null;
@@ -826,7 +835,7 @@ function shapeRunFromPayload(payload: Attrs): Run {
   return { type: 'run', content: [{ type: 'shape', shape }] };
 }
 
-function inlineSdtFromPayload(payload: Attrs): InlineSdt {
+function inlineSdtFromPayload(payload: Attrs, recovery: ChartRecovery): InlineSdt {
   let properties: SdtProperties = sdtAttrsToProps(payload);
   const propertiesJson = asString(payload.propertiesJson);
   if (propertiesJson && propertiesJson.length <= 1_000_000) {
@@ -857,7 +866,7 @@ function inlineSdtFromPayload(payload: Attrs): InlineSdt {
       attributes,
     });
   }
-  let content = inlineSdtContent(buildParagraphContent(items));
+  let content = inlineSdtContent(buildParagraphContent(items, recovery));
   const authoredValue = contentControlValue(payload.value);
   if (authoredValue) {
     try {
@@ -908,7 +917,7 @@ function commentReferenceFromPayload(payload: Attrs): Run | null {
   };
 }
 
-function ordinaryContentForItem(item: InlineItem): ParagraphContent | null {
+function ordinaryContentForItem(item: InlineItem, recovery: ChartRecovery): ParagraphContent | null {
   if (item.kind === 'text') return createTextRun(item.text, item.attributes);
   switch (item.embedKind) {
     case 'break':
@@ -922,7 +931,7 @@ function ordinaryContentForItem(item: InlineItem): ParagraphContent | null {
     case 'shape':
       return shapeRunFromPayload(item.payload);
     case 'chart':
-      return chartRunFromPayload(item.payload);
+      return chartRunFromPayload(item.payload, recovery);
     case 'opaqueDrawing':
       return opaqueDrawingRunFromPayload(item.payload);
     case 'field':
@@ -932,7 +941,7 @@ function ordinaryContentForItem(item: InlineItem): ParagraphContent | null {
     case 'math':
       return mathFromPayload(item.payload);
     case 'sdt':
-      return inlineSdtFromPayload(item.payload);
+      return inlineSdtFromPayload(item.payload, recovery);
     case 'noteRef': {
       const footnote = item.payload.footnoteRefId;
       const endnote = item.payload.endnoteRefId;
@@ -950,7 +959,11 @@ function ordinaryContentForItem(item: InlineItem): ParagraphContent | null {
   }
 }
 
-function trackedContentForItem(item: InlineItem, info: TrackedChangeInfo): ParagraphContent {
+function trackedContentForItem(
+  item: InlineItem,
+  info: TrackedChangeInfo,
+  recovery: ChartRecovery
+): ParagraphContent {
   let run: Run;
   if (item.kind === 'embed' && item.embedKind === 'image') run = imageRunFromPayload(item.payload);
   else if (item.kind === 'embed' && item.embedKind === 'horizontalRule')
@@ -958,7 +971,7 @@ function trackedContentForItem(item: InlineItem, info: TrackedChangeInfo): Parag
   else if (item.kind === 'embed' && item.embedKind === 'shape')
     run = shapeRunFromPayload(item.payload);
   else if (item.kind === 'embed' && item.embedKind === 'chart')
-    run = chartRunFromPayload(item.payload) ?? { type: 'run', content: [] };
+    run = chartRunFromPayload(item.payload, recovery) ?? { type: 'run', content: [] };
   else if (item.kind === 'embed' && item.embedKind === 'opaqueDrawing')
     run = opaqueDrawingRunFromPayload(item.payload) ?? { type: 'run', content: [] };
   else if (item.kind === 'text') {
@@ -1022,7 +1035,7 @@ function projectionSignature(items: InlineItem[]): string {
   return stableStringify(normalized);
 }
 
-function restoreProjectedFieldResults(items: InlineItem[]): InlineItem[] {
+function restoreProjectedFieldResults(items: InlineItem[], recovery: ChartRecovery): InlineItem[] {
   const owners: { id: number; owner: EmbedItem; position: number }[] = [];
   for (const [position, item] of items.entries()) {
     if (item.kind !== 'embed' || item.embedKind !== 'field') continue;
@@ -1058,7 +1071,7 @@ function restoreProjectedFieldResults(items: InlineItem[]): InlineItem[] {
       if (index === undefined || !Array.isArray(child?.items)) continue;
       const current = groups.get(owner)?.get(index) ?? [];
       if (projectionSignature(current) === projectionSignature(child.items as InlineItem[])) continue;
-      const rebuilt = inlineSdtContent(buildParagraphContent(current));
+      const rebuilt = inlineSdtContent(buildParagraphContent(current, recovery));
       const original = index < 0 ? stored.structuredCode?.inline?.[-index - 1] : stored.structuredResult?.inline?.[index];
       if (original?.type === 'hyperlink' && rebuilt.length === 1 && rebuilt[0]?.type === 'hyperlink') {
         rebuilt[0] = { ...original, ...rebuilt[0], structuredChildren: rebuilt[0].structuredChildren };
@@ -1081,8 +1094,8 @@ function restoreProjectedFieldResults(items: InlineItem[]): InlineItem[] {
   return remaining;
 }
 
-function buildParagraphContent(items: InlineItem[]): ParagraphContent[] {
-  items = restoreProjectedFieldResults(items);
+function buildParagraphContent(items: InlineItem[], recovery: ChartRecovery): ParagraphContent[] {
+  items = restoreProjectedFieldResults(items, recovery);
   const content: ParagraphContent[] = [];
   let currentRun: Run | null = null;
   let currentFormattingKey: string | null = null;
@@ -1103,7 +1116,7 @@ function buildParagraphContent(items: InlineItem[]): ParagraphContent[] {
     if (item.kind === 'embed' && item.embedKind === 'noteRef') {
       flushRun();
       flushHyperlink();
-      const note = ordinaryContentForItem(item);
+      const note = ordinaryContentForItem(item, recovery);
       if (note) content.push(note);
       continue;
     }
@@ -1112,7 +1125,7 @@ function buildParagraphContent(items: InlineItem[]): ParagraphContent[] {
     if (revision) {
       flushRun();
       flushHyperlink();
-      content.push(trackedContentForItem(item, revision));
+      content.push(trackedContentForItem(item, revision, recovery));
       continue;
     }
 
@@ -1144,7 +1157,7 @@ function buildParagraphContent(items: InlineItem[]): ParagraphContent[] {
     }
 
     flushRun();
-    const child = ordinaryContentForItem(item);
+    const child = ordinaryContentForItem(item, recovery);
     if (child) content.push(child);
   }
 
@@ -1421,10 +1434,11 @@ function paragraphFromStory(
   properties: Attrs,
   items: InlineItem[],
   commentBoundaries: CommentBoundary[],
-  baseParagraph: Paragraph | undefined
+  baseParagraph: Paragraph | undefined,
+  recovery: ChartRecovery
 ): Paragraph {
   const attrs = paragraphAttrs(properties);
-  let content = buildParagraphContent(items);
+  let content = buildParagraphContent(items, recovery);
   content = restoreOriginalRuns(
     content,
     items,
@@ -1844,6 +1858,57 @@ function commentRanges(
   return byStory;
 }
 
+/**
+ * Source for chart placements a persisted session no longer carries. The base
+ * document still names each chart's `w:drawing`; sessions seeded before
+ * drawings were replayed recover it from there instead of failing the save.
+ */
+interface ChartRecovery {
+  drawingFor(rId: string | undefined, path: string | undefined): string | undefined;
+  unrecoverable(rId: string | undefined, path: string | undefined): void;
+}
+
+function collectChartDrawings(blocks: readonly BlockContent[], into: Map<string, string>): void {
+  for (const block of blocks) {
+    if (block.type === 'paragraph') {
+      for (const run of paragraphChartRuns(block.content)) {
+        for (const content of run.content) {
+          if (content.type !== 'chart' || !content.chart.drawingXml) continue;
+          if (content.chart.rId !== undefined) into.set(`rId:${content.chart.rId}`, content.chart.drawingXml);
+          if (content.chart.path !== undefined) into.set(`path:${content.chart.path}`, content.chart.drawingXml);
+        }
+      }
+    } else if (block.type === 'table') {
+      for (const row of block.rows) for (const cell of row.cells) collectChartDrawings(cell.content, into);
+    } else if (block.type === 'blockSdt') {
+      collectChartDrawings(block.content, into);
+    }
+  }
+}
+
+function paragraphChartRuns(content: readonly ParagraphContent[]): Run[] {
+  const runs: Run[] = [];
+  const visitInline = (child: ParagraphContent | HyperlinkContent): void => {
+    if (child.type === 'run') runs.push(child);
+    else if (child.type === 'hyperlink') {
+      for (const inline of child.structuredChildren ?? child.children) visitInline(inline);
+    } else if (child.type === 'inlineSdt') {
+      for (const inline of child.content) visitInline(inline);
+    } else if (child.type === 'simpleField') {
+      for (const run of child.content) if (run.type === 'run') runs.push(run);
+    } else if (child.type === 'complexField') {
+      for (const run of [...child.fieldCode, ...child.fieldResult]) runs.push(run);
+    } else if (
+      child.type === 'insertion' || child.type === 'deletion' ||
+      child.type === 'moveFrom' || child.type === 'moveTo'
+    ) {
+      for (const inline of child.content) visitInline(inline as ParagraphContent);
+    }
+  };
+  for (const child of content) visitInline(child);
+  return runs;
+}
+
 function restoreRawBlocks(projected: BlockContent[], base: readonly BlockContent[]): BlockContent[] {
   let offset = 0;
   for (let index = 0; index < base.length; index += 1) {
@@ -1864,8 +1929,10 @@ function restoreRawBlocks(projected: BlockContent[], base: readonly BlockContent
 
 class SaveContext {
   readonly storyIds: Set<string>;
+  readonly warnings: string[] = [];
   private readonly baseParagraphs: Map<string, Paragraph>;
   private readonly baseStories: Map<string, readonly BlockContent[]>;
+  private readonly baseChartDrawings = new Map<string, string>();
   private readonly comments: Map<string, Array<{ id: number; start: number; end: number }>>;
 
   constructor(
@@ -1875,7 +1942,22 @@ class SaveContext {
     this.storyIds = new Set(session.storyIds());
     this.baseParagraphs = collectBaseParagraphs(base);
     this.baseStories = collectBaseStories(base);
+    for (const blocks of this.baseStories.values()) collectChartDrawings(blocks, this.baseChartDrawings);
     this.comments = commentRanges(session, base.package.document.comments);
+  }
+
+  recovery(): ChartRecovery {
+    return {
+      drawingFor: (rId, path) =>
+        (rId !== undefined ? this.baseChartDrawings.get(`rId:${rId}`) : undefined) ??
+        (path !== undefined ? this.baseChartDrawings.get(`path:${path}`) : undefined),
+      unrecoverable: (rId, path) => {
+        const identity = rId !== undefined ? ` (rId ${rId})` : path !== undefined ? ` (path ${path})` : '';
+        this.warnings.push(
+          `chart run carries no drawing to replay${identity}; keeping the run out of the output`
+        );
+      },
+    };
   }
 
   storyToBlocks(storyId: string): BlockContent[] {
@@ -1934,7 +2016,8 @@ class SaveContext {
             paragraphCommentBoundaries(storyOffset),
             this.baseParagraphs.get(segment.paraId) ?? (segment.paraId === generatedId
               ? baseParagraphBlocks?.[paragraphIndex]
-              : undefined)
+              : undefined),
+            this.recovery()
           )
         );
         items = [];
@@ -1989,7 +2072,7 @@ class SaveContext {
 
     // Defensive recovery for malformed/legacy stories without a final pilcrow.
     if (items.length > 0) {
-      blocks.push({ type: 'paragraph', content: buildParagraphContent(items) });
+      blocks.push({ type: 'paragraph', content: buildParagraphContent(items, this.recovery()) });
     }
     return restoreRawBlocks(blocks, baseBlocks ?? []);
   }
@@ -2079,6 +2162,9 @@ export function yrsToDocument(
 
   return {
     ...base,
+    ...(context.warnings.length > 0
+      ? { warnings: [...(base.warnings ?? []), ...context.warnings] }
+      : {}),
     package: {
       ...base.package,
       document: {

@@ -109,9 +109,18 @@ fn default_true() -> bool {
 /// `ooxml-opc` writer. Original entries seed the output in archive order;
 /// only editor-owned parts are overwritten or appended.
 pub fn write_docx_s13(
-    mut request: S13SaveRequest,
+    request: S13SaveRequest,
     original_docx: &[u8],
 ) -> Result<Vec<u8>, ParseError> {
+    write_docx_s13_with_warnings(request, original_docx).map(|(bytes, _)| bytes)
+}
+
+/// [`write_docx_s13`], also returning the non-fatal save diagnostics the
+/// serializer recorded (a chart run kept out of the output, for example).
+pub fn write_docx_s13_with_warnings(
+    mut request: S13SaveRequest,
+    original_docx: &[u8],
+) -> Result<(Vec<u8>, Vec<String>), ParseError> {
     request.determinism.validate()?;
     let original_parts = ooxml_opc::unzip_parts(original_docx).map_err(ParseError::Container)?;
     let limits = crate::xml::ParseLimits::default();
@@ -129,6 +138,9 @@ pub fn write_docx_s13(
     }
 
     let mut context = SerializerContext::new(&request.determinism)?;
+    context.set_chart_drawings(chart_drawings_in_part(
+        &package.text(&package.document_path).unwrap_or_default(),
+    ));
     let serialized_document = serialize_document_part(&request.document, &mut context)?;
     let document_xml = if let Some(selective) = request.selective.as_ref() {
         let original = package
@@ -160,6 +172,9 @@ pub fn write_docx_s13(
         let mut footnotes = request.footnote_separators;
         footnotes.extend(request.footnotes);
         if !footnotes.is_empty() {
+            context.set_chart_drawings(chart_drawings_in_part(
+                &package.text("word/footnotes.xml").unwrap_or_default(),
+            ));
             package.set_text(
                 "word/footnotes.xml",
                 serialize_footnotes_part(&footnotes, &mut context)?,
@@ -168,6 +183,9 @@ pub fn write_docx_s13(
         let mut endnotes = request.endnote_separators;
         endnotes.extend(request.endnotes);
         if !endnotes.is_empty() {
+            context.set_chart_drawings(chart_drawings_in_part(
+                &package.text("word/endnotes.xml").unwrap_or_default(),
+            ));
             package.set_text(
                 "word/endnotes.xml",
                 serialize_endnotes_part(&endnotes, &mut context)?,
@@ -187,7 +205,46 @@ pub fn write_docx_s13(
         }
     }
 
-    ooxml_opc::rezip_parts(&package.parts).map_err(ParseError::Container)
+    let warnings = context.take_warnings();
+    let bytes = ooxml_opc::rezip_parts(&package.parts).map_err(ParseError::Container)?;
+    Ok((bytes, warnings))
+}
+
+/// Authored chart placements in one story part, keyed by chart relationship
+/// id. The lookup is lexical: a `w:drawing` never nests, so each span from an
+/// opening tag to its first closing tag is one placement, and the `c:chart`
+/// reference inside names the chart it places.
+fn chart_drawings_in_part(xml: &str) -> HashMap<String, String> {
+    let mut drawings = HashMap::new();
+    let mut cursor = 0;
+    while let Some(relative) = xml[cursor..].find("<w:drawing") {
+        let start = cursor + relative;
+        let boundary = xml.as_bytes().get(start + "<w:drawing".len()).copied();
+        if !matches!(boundary, Some(b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')) {
+            cursor = start + "<w:drawing".len();
+            continue;
+        }
+        let Some(tag_end) = find_tag_end(xml.as_bytes(), start) else {
+            break;
+        };
+        cursor = tag_end + 1;
+        if xml.as_bytes()[start..tag_end].ends_with(b"/") {
+            continue;
+        }
+        let Some(relative_close) = xml[cursor..].find("</w:drawing>") else {
+            continue;
+        };
+        let span = &xml[start..cursor + relative_close + "</w:drawing>".len()];
+        let Some(chart) = XmlTagIter::new(span, "c:chart").next() else {
+            continue;
+        };
+        if let Some(id) = xml_attribute(chart, "r:id") {
+            drawings
+                .entry(id.to_owned())
+                .or_insert_with(|| span.to_owned());
+        }
+    }
+    drawings
 }
 
 #[derive(Clone, Debug)]
@@ -302,10 +359,11 @@ fn serialize_header_footer_parts(
             {
                 continue;
             }
-            package.set_text(
-                resolve_relative_path(&package.document_path, &relationship.target)?,
-                serialize_header_footer_part(story, context)?,
-            );
+            let story_path = resolve_relative_path(&package.document_path, &relationship.target)?;
+            context.set_chart_drawings(chart_drawings_in_part(
+                &package.text(&story_path).unwrap_or_default(),
+            ));
+            package.set_text(story_path, serialize_header_footer_part(story, context)?);
         }
     }
     Ok(())
@@ -1640,6 +1698,80 @@ mod tests {
 
         assert!(document.contains("w:anchor=\"inside\""));
         assert!(!relationships.contains(relationship_types::HYPERLINK));
+    }
+
+    #[test]
+    fn chart_run_without_a_drawing_replays_the_source_part_placement() {
+        let drawing = "<w:drawing><wp:inline><wp:extent cx=\"5486400\" cy=\"3200400\"/><wp:docPr id=\"1\" name=\"Chart 1\"/><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart r:id=\"rIdChart1\"/></a:graphicData></a:graphic></wp:inline></w:drawing>";
+        let original = base_package(&format!(
+            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>old</w:t></w:r></w:p><w:p><w:r>{drawing}</w:r></w:p></w:body></w:document>"
+        ));
+        let request: S13SaveRequest = serde_json::from_value(json!({
+            "determinism": determinism(),
+            "document": { "content": [
+                text_paragraph("new", None),
+                {
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "run",
+                        "content": [{
+                            "type": "chart",
+                            "chart": {
+                                "type": "chart", "chartType": "column",
+                                "rId": "rIdChart1", "path": "word/charts/chart1.xml",
+                                "series": [], "plotGroups": []
+                            }
+                        }]
+                    }]
+                }
+            ] },
+            "options": { "updateModifiedDate": false }
+        }))
+        .expect("request");
+        let (saved, warnings) = write_docx_s13_with_warnings(request, &original).expect("save");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let document = String::from_utf8(part_map(&saved)["word/document.xml"].clone()).unwrap();
+        assert!(document.contains("<w:t>new</w:t>"));
+        assert!(document.contains(drawing));
+    }
+
+    #[test]
+    fn chart_run_without_any_placement_is_dropped_with_a_warning() {
+        let original = base_package(
+            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>old</w:t></w:r></w:p></w:body></w:document>",
+        );
+        let request: S13SaveRequest = serde_json::from_value(json!({
+            "determinism": determinism(),
+            "document": { "content": [
+                text_paragraph("new", None),
+                {
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "run",
+                        "content": [{
+                            "type": "chart",
+                            "chart": {
+                                "type": "chart", "chartType": "column",
+                                "rId": "rIdChart1", "path": "word/charts/chart1.xml",
+                                "series": [], "plotGroups": []
+                            }
+                        }]
+                    }]
+                }
+            ] },
+            "options": { "updateModifiedDate": false }
+        }))
+        .expect("request");
+        let (saved, warnings) = write_docx_s13_with_warnings(request, &original).expect("save");
+        assert_eq!(
+            warnings,
+            [
+                "chart run carries no drawing to replay (rId rIdChart1); keeping the run out of the output"
+            ]
+        );
+        let document = String::from_utf8(part_map(&saved)["word/document.xml"].clone()).unwrap();
+        assert!(document.contains("<w:t>new</w:t>"));
+        assert!(!document.contains("c:chart"));
     }
 
     #[test]
