@@ -1862,6 +1862,7 @@ function commentRanges(
  * Source for chart placements a persisted session no longer carries. The base
  * document still names each chart's `w:drawing`; sessions seeded before
  * drawings were replayed recover it from there instead of failing the save.
+ * Relationship ids are local to their part, so drawings stay keyed by story.
  */
 interface ChartRecovery {
   drawingFor(rId: string | undefined, path: string | undefined): string | undefined;
@@ -1932,7 +1933,7 @@ class SaveContext {
   readonly warnings: string[] = [];
   private readonly baseParagraphs: Map<string, Paragraph>;
   private readonly baseStories: Map<string, readonly BlockContent[]>;
-  private readonly baseChartDrawings = new Map<string, string>();
+  private readonly baseChartDrawings = new Map<string, Map<string, string>>();
   private readonly comments: Map<string, Array<{ id: number; start: number; end: number }>>;
 
   constructor(
@@ -1942,15 +1943,20 @@ class SaveContext {
     this.storyIds = new Set(session.storyIds());
     this.baseParagraphs = collectBaseParagraphs(base);
     this.baseStories = collectBaseStories(base);
-    for (const blocks of this.baseStories.values()) collectChartDrawings(blocks, this.baseChartDrawings);
+    for (const [storyId, blocks] of this.baseStories) {
+      const scoped = new Map<string, string>();
+      collectChartDrawings(blocks, scoped);
+      if (scoped.size > 0) this.baseChartDrawings.set(storyId, scoped);
+    }
     this.comments = commentRanges(session, base.package.document.comments);
   }
 
-  recovery(): ChartRecovery {
+  recovery(storyId: string): ChartRecovery {
+    const scoped = this.baseChartDrawings.get(storyId);
     return {
       drawingFor: (rId, path) =>
-        (rId !== undefined ? this.baseChartDrawings.get(`rId:${rId}`) : undefined) ??
-        (path !== undefined ? this.baseChartDrawings.get(`path:${path}`) : undefined),
+        (rId !== undefined ? scoped?.get(`rId:${rId}`) : undefined) ??
+        (path !== undefined ? scoped?.get(`path:${path}`) : undefined),
       unrecoverable: (rId, path) => {
         const identity = rId !== undefined ? ` (rId ${rId})` : path !== undefined ? ` (path ${path})` : '';
         this.warnings.push(
@@ -2017,7 +2023,7 @@ class SaveContext {
             this.baseParagraphs.get(segment.paraId) ?? (segment.paraId === generatedId
               ? baseParagraphBlocks?.[paragraphIndex]
               : undefined),
-            this.recovery()
+            this.recovery(storyId)
           )
         );
         items = [];
@@ -2072,7 +2078,7 @@ class SaveContext {
 
     // Defensive recovery for malformed/legacy stories without a final pilcrow.
     if (items.length > 0) {
-      blocks.push({ type: 'paragraph', content: buildParagraphContent(items, this.recovery()) });
+      blocks.push({ type: 'paragraph', content: buildParagraphContent(items, this.recovery(storyId)) });
     }
     return restoreRawBlocks(blocks, baseBlocks ?? []);
   }

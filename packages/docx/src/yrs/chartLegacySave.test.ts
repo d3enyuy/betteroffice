@@ -109,3 +109,83 @@ it('drops an unrecoverable legacy chart with a warning instead of throwing', asy
     session.destroy();
   }
 });
+
+function chartParagraphWith(chart: Chart): Paragraph {
+  return {
+    type: 'paragraph',
+    paraId: '00000001',
+    content: [{ type: 'run', content: [{ type: 'chart', chart }] }],
+  };
+}
+
+function chartRunXml(saved: Paragraph): string | undefined {
+  const run = saved.content.find((child) => child.type === 'run');
+  const content = run?.type === 'run' && run.content.find((entry) => entry.type === 'chart');
+  return content?.type === 'chart' ? content.chart.drawingXml : undefined;
+}
+
+it('recovers legacy chart placements per story when relationship ids collide', async () => {
+  const bodyDrawing = CHART_DRAWING.replace('Chart 1', 'Body chart');
+  const headerDrawing = CHART_DRAWING.replace('Chart 1', 'Header chart');
+  const document: Document = {
+    originalBuffer: fixture().buffer as ArrayBuffer,
+    package: {
+      document: {
+        content: [
+          chartParagraphWith({
+            type: 'chart',
+            chartType: 'column',
+            rId: 'rId5',
+            path: 'word/charts/chart1.xml',
+            series: [],
+            drawingXml: bodyDrawing,
+          }),
+        ],
+      },
+      headers: new Map([
+        [
+          'rId5',
+          {
+            type: 'header',
+            hdrFtrType: 'default',
+            content: [
+              chartParagraphWith({
+                type: 'chart',
+                chartType: 'column',
+                rId: 'rId5',
+                path: 'word/charts/chart2.xml',
+                series: [],
+                drawingXml: headerDrawing,
+              }),
+            ],
+          },
+        ],
+      ]),
+    },
+  };
+  const session = await createYrsSession({ clientId: 74032 });
+  try {
+    documentToYrs(session, document);
+    for (const storyId of ['body', 'hf:rId5']) {
+      let index = 0;
+      for (const segment of session.storySegments(storyId)) {
+        if (segment.kind === 'embed' && segment.embedKind === 'chart') {
+          const stored = JSON.parse(segment.payload.chartJson as string) as Chart;
+          delete stored.drawingXml;
+          session.applyRawOps(storyId, [
+            { op: 'setEmbedAttr', index, key: 'chartJson', value: JSON.stringify(stored) },
+          ]);
+        }
+        index += segment.kind === 'text' ? segment.text.length : 1;
+      }
+    }
+    const saved = yrsToDocument(session, document);
+    expect(chartRunXml(saved.package.document.content[0] as Paragraph)).toBe(bodyDrawing);
+    const header = saved.package.headers?.get('rId5');
+    if (!header) throw new Error('expected the header part to survive the save');
+    expect(chartRunXml(header.content[0] as Paragraph)).toBe(headerDrawing);
+    expect(saved.warnings ?? []).toEqual([]);
+  } finally {
+    session.destroy();
+  }
+});
