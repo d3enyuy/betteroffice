@@ -38,24 +38,25 @@
 //!
 //! The distance resolves as the envelope override, then the page's
 //! `margins.header` / `margins.footer`, then `DEFAULT_HF_DISTANCE_PX`. Both
-//! kinds take the interactive height `max(flowHeight - min(0, visualTop), 24)`.
+//! kinds take the interactive height `max(flowHeight - min(0, visualTop), 24)`,
+//! which is a minimum for the clickable rect only and never for the content.
 //! A header band sits at `distance + visualTop` and flows content from
 //! `distance`. A footer band is bottom-anchored: it sits at
-//! `pageHeight - distance - bandHeight`, flows content from
-//! `pageHeight - distance - max(flowHeight, 24)`, and anchors floating
-//! tables against `pageHeight - distance - flowHeight`. Content
-//! starts at `margins.left` horizontally in both cases.
+//! `pageHeight - distance - bandHeight` and flows content — and anchors
+//! floating tables — from `header_footer::footer_flow_origin`, so `w:footer`
+//! lands the bottom of the story on the page. Content starts at `margins.left`
+//! horizontally in both cases.
 //!
 //! # Stacking inside a band
 //!
-//! A band-local cursor starts at zero. A paragraph paints at
-//! `cursor + spacing.before` as a single unsplit fragment and advances the
-//! cursor by its measured total height, which already accounts for its own
-//! spacing. An inline table paints whole at the cursor and advances by its
-//! total height; a `w:tblpPr` floating table paints at its resolved anchor and
-//! does not advance. An image paints at the cursor and advances by its measured
-//! height. Anchored shapes paint at their page coordinates without advancing
-//! the cursor; inline shapes advance by their height.
+//! Blocks stack through the same [`HeaderFooterFlow`] the measure and the
+//! resident recompose use, so the height a band reports and the y a block
+//! paints at cannot disagree. A paragraph paints its content box as a single
+//! unsplit fragment, with its spacing collapsing against the previous block's.
+//! An inline table or image paints whole at the cursor and advances it; a
+//! `w:tblpPr` floating table paints at its resolved anchor and does not.
+//! Anchored shapes paint at their page coordinates without advancing the
+//! cursor; inline shapes advance by their height.
 
 use serde::Deserialize;
 
@@ -447,33 +448,34 @@ fn compose_region(
                 .footer_distance
                 .or(page.margins.footer)
                 .unwrap_or(DEFAULT_HF_DISTANCE_PX);
-            let actual = flow_height.max(MIN_BAND_HEIGHT_PX);
+            let origin_y =
+                crate::header_footer::footer_flow_origin(page.size.h, distance, flow_height);
             let band_y = page.size.h - distance - interactive;
-            let origin_y = page.size.h - distance - actual;
-            let flow_top = page.size.h - distance - flow_height;
-            (band_y, interactive, origin_y, flow_top)
+            (band_y, interactive, origin_y, origin_y)
         }
     };
 
     let mut prims: Vec<Primitive> = Vec::new();
     let origin_x = page.margins.left;
-    let mut cursor = 0.0_f64;
+    // The band stacks with the same collapsing flow the measure and the
+    // resident recompose use, so the two projections cannot drift.
+    let mut flow = crate::header_footer::HeaderFooterFlow::default();
 
     for mb in &v.measured {
+        let cursor = flow.cursor;
         match (&mb.block, &mb.measure) {
             (BlockIn::Paragraph(block), MeasureIn::Paragraph(measure)) => {
-                let spacing_before = block
-                    .attrs
-                    .as_ref()
-                    .and_then(|a| a.spacing)
-                    .and_then(|s| s.before)
-                    .unwrap_or(0.0);
+                let spacing = block.attrs.as_ref().and_then(|a| a.spacing);
+                let spacing_before = spacing.and_then(|s| s.before).unwrap_or(0.0);
+                let spacing_after = spacing.and_then(|s| s.after).unwrap_or(0.0);
+                let content_height =
+                    (measure.total_height - spacing_before - spacing_after).max(0.0);
                 let frag = ParagraphFragmentIn {
                     block_id: block.id.clone(),
                     x: origin_x,
-                    y: origin_y + cursor + spacing_before,
+                    y: origin_y + flow.place(content_height, spacing_before, spacing_after),
                     width: content_width,
-                    height: measure.total_height,
+                    height: content_height,
                     from_line: 0,
                     to_line: measure.lines.len(),
                     pm_start: block.pm_start,
@@ -486,15 +488,17 @@ fn compose_region(
                     // the header/footer region — stamp the line range
                     &mut prims, &frag, block, measure, ctx, frag.x, frag.y, None, None, true, true,
                 );
-                cursor += measure.total_height;
             }
             (BlockIn::Table(block), MeasureIn::Table(measure)) => {
-                let (x, y, advance_cursor) = if let Some(floating) = block.floating.as_ref() {
+                let (x, y) = if let Some(floating) = block.floating.as_ref() {
                     let (left, top) =
                         resolve_hf_floating_table_position(floating, page, flow_top, origin_x);
-                    (origin_x + left, origin_y + top, false)
+                    (origin_x + left, origin_y + top)
                 } else {
-                    (origin_x, origin_y + cursor, true)
+                    (
+                        origin_x,
+                        origin_y + flow.place(measure.total_height, 0.0, 0.0),
+                    )
                 };
                 let frag = TableFragmentIn {
                     block_id: block.id.clone(),
@@ -511,11 +515,9 @@ fn compose_region(
                     carried_to_next: None,
                 };
                 emit_table_fragment(&mut prims, &frag, block, measure, ctx);
-                if advance_cursor {
-                    cursor += measure.total_height;
-                }
             }
             (BlockIn::Image(block), MeasureIn::Image(measure)) => {
+                let image_y = origin_y + flow.place(measure.height, 0.0, 0.0);
                 let rot = rotation_degrees(block.transform.as_deref());
                 let mut attrs = BlockRef::of(&block.id).attrs();
                 attrs.doc_start = block.pm_start;
@@ -525,7 +527,7 @@ fn compose_region(
                 prims.push(Primitive::Image(ImagePrimitive {
                     rel_id: block.src.clone(),
                     x: px(origin_x),
-                    y: px(origin_y + cursor),
+                    y: px(image_y),
                     w: px(measure.width),
                     h: px(measure.height),
                     rotation_deg: if rot != 0.0 { Some(px(rot)) } else { None },
@@ -536,13 +538,14 @@ fn compose_region(
                     alt_text: capped_alt_text(block.alt.as_deref()),
                     attrs,
                 }));
-                cursor += measure.height;
             }
             (BlockIn::Shape(block), MeasureIn::Shape(measure)) => {
-                emit_hf_shape(&mut prims, block, measure, ctx, page, origin_y + cursor);
-                if block.position.is_none() {
-                    cursor += measure.height;
-                }
+                let shape_y = if block.position.is_none() {
+                    flow.place(measure.height, 0.0, 0.0)
+                } else {
+                    cursor
+                };
+                emit_hf_shape(&mut prims, block, measure, ctx, page, origin_y + shape_y);
             }
             _ => {}
         }

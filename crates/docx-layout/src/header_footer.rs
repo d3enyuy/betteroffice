@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
@@ -11,6 +12,17 @@ use crate::types::{
 
 const DEFAULT_HF_DISTANCE_PX: f64 = 48.0;
 const MIN_CONTENT_HEIGHT_PX: f64 = 24.0;
+
+/// Top of a footer story's in-flow content.
+///
+/// `w:footer` (ECMA-376 17.6.11 `w:pgMar`) is the distance from the bottom edge
+/// of the page to the bottom edge of the footer, so the story is bottom
+/// anchored and its origin follows its own flow height. Every projection that
+/// places footer content resolves it here so they cannot drift apart; a header
+/// needs no helper because `w:header` is already the origin.
+pub fn footer_flow_origin(page_height: f64, distance: f64, flow_height: f64) -> f64 {
+    page_height - distance - flow_height
+}
 
 #[derive(Default)]
 pub(crate) struct HeaderFooterFlow {
@@ -28,6 +40,68 @@ impl HeaderFooterFlow {
 
     pub fn height(&self) -> f64 {
         self.cursor + self.after
+    }
+}
+
+/// True when a paragraph carries something that needs a line box of its own.
+/// Anchored drawings paint at their own coordinates, so a run holding one is
+/// not inline content.
+fn has_inline_content(paragraph: &ParagraphBlock) -> bool {
+    paragraph.runs.iter().any(|run| match run {
+        Run::Image(image) => image.position.is_none(),
+        _ => true,
+    })
+}
+
+/// Restores one line stack per source `w:p`.
+///
+/// Lowering splits a paragraph that holds a block-level drawing into the run
+/// segments around it, and each segment then measures as a paragraph of its
+/// own — so a footer whose single paragraph anchors a shape stacks two line
+/// boxes where Word lays the paragraph out once, and the whole bottom-anchored
+/// story rides that high. Fragments share the source `paraId`: those without
+/// inline content collapse to nothing, and when no fragment has any the first
+/// keeps the paragraph's own empty line.
+fn collapse_split_paragraphs(blocks: &mut [LayoutBlock], measures: &mut [BlockExtent]) {
+    let mut fragments: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (index, block) in blocks.iter().enumerate() {
+        let LayoutBlock::Paragraph(paragraph) = block else {
+            continue;
+        };
+        let Some(para_id) = paragraph.para_id.as_deref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        fragments.entry(para_id).or_default().push(index);
+    }
+    let mut hollow = Vec::new();
+    for indices in fragments.values() {
+        if indices.len() < 2 {
+            continue;
+        }
+        let mut empty: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|index| match &blocks[*index] {
+                LayoutBlock::Paragraph(paragraph) => !has_inline_content(paragraph),
+                _ => false,
+            })
+            .collect();
+        if empty.len() == indices.len() {
+            empty.remove(0);
+        }
+        hollow.extend(empty);
+    }
+    for index in hollow {
+        if let LayoutBlock::Paragraph(paragraph) = &mut blocks[index]
+            && let Some(spacing) = paragraph.attrs.as_mut().and_then(|a| a.spacing.as_mut())
+        {
+            spacing.before = Some(0.0);
+            spacing.after = Some(0.0);
+        }
+        if let BlockExtent::Paragraph(extent) = &mut measures[index] {
+            extent.lines.clear();
+            extent.total_height = 0.0;
+        }
     }
 }
 
@@ -119,7 +193,8 @@ pub fn measure_header_footer(
     }
     let mut blocks = blocks;
     apply_contextual_spacing_blocks(&mut blocks);
-    let measures = measure_blocks(&mut blocks, content_width, config)?;
+    let mut measures = measure_blocks(&mut blocks, content_width, config)?;
+    collapse_split_paragraphs(&mut blocks, &mut measures);
     let height = measures.iter().map(extent_height).sum();
     let mut flow = HeaderFooterFlow::default();
     for (block, measure) in blocks.iter().zip(&measures) {
@@ -311,7 +386,9 @@ fn visual_bounds(
                 .unwrap_or(DEFAULT_HF_DISTANCE_PX);
                 let flow_top = match metrics.kind {
                     HeaderFooterKind::Header => distance,
-                    HeaderFooterKind::Footer => metrics.page_size.h - distance - height,
+                    HeaderFooterKind::Footer => {
+                        footer_flow_origin(metrics.page_size.h, distance, height)
+                    }
                 };
                 let (_, top) = crate::anchor::resolve_position(
                     shape.position.as_ref(),
@@ -361,7 +438,7 @@ fn image_visual_top(
     };
     let flow_top = match metrics.kind {
         HeaderFooterKind::Header => distance,
-        HeaderFooterKind::Footer => metrics.page_size.h - distance - flow_height,
+        HeaderFooterKind::Footer => footer_flow_origin(metrics.page_size.h, distance, flow_height),
     };
     let Some(vertical) = image
         .position
@@ -481,6 +558,90 @@ mod tests {
             assert_eq!(tail.total_height, 17.0);
             assert_eq!(tail.lines[0].line_height, 12.0);
         }
+    }
+
+    fn split_paragraph_blocks() -> serde_json::Value {
+        json!([
+            {"kind":"paragraph","id":"a","paraId":"P1",
+             "runs":[{"kind":"image","src":"i","width":30,"height":30,
+                      "position":{"vertical":{"relativeTo":"paragraph","posOffset":0}}}],
+             "attrs":{"spacing":{"before":0,"after":8,"line":12,"lineRule":"exact"}}},
+            {"kind":"shape","id":"s","shapeType":"rect","geometryPath":[],"children":[],
+             "width":40,"height":10,
+             "position":{"vertical":{"relativeTo":"paragraph","posOffset":0}}},
+            {"kind":"paragraph","id":"b","paraId":"P1","runs":[{"kind":"text","text":"1"}],
+             "attrs":{"spacing":{"before":0,"after":8,"line":12,"lineRule":"exact"}}}
+        ])
+    }
+
+    fn footer_variant(blocks: serde_json::Value) -> HeaderFooterVariant {
+        let size = Size { w: 300.0, h: 500.0 };
+        let margins = PageMargins {
+            top: 40.0,
+            right: 40.0,
+            bottom: 40.0,
+            left: 40.0,
+            header: Some(20.0),
+            footer: Some(20.0),
+        };
+        measure_header_footer(
+            "footer".to_owned(),
+            HeaderFooterKind::Footer,
+            HeaderFooterType::Default,
+            0,
+            serde_json::from_value(blocks).unwrap(),
+            220.0,
+            HeaderFooterMetrics {
+                kind: HeaderFooterKind::Footer,
+                page_size: &size,
+                margins: &margins,
+            },
+            &MeasurementConfig::default(),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn split_paragraph_fragments_share_one_line_stack() {
+        let variant = footer_variant(split_paragraph_blocks());
+
+        // One `w:p`: 12px line + 8px after, not twice over.
+        assert_eq!(variant.flow_height, 20.0);
+        let BlockExtent::Paragraph(hollow) = &variant.measured[0].measure else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(hollow.total_height, 0.0);
+        assert!(hollow.lines.is_empty());
+        let BlockExtent::Paragraph(text) = &variant.measured[2].measure else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(text.total_height, 20.0);
+    }
+
+    #[test]
+    fn distinct_paragraphs_keep_their_own_line_stacks() {
+        let mut blocks = split_paragraph_blocks();
+        blocks[2]["paraId"] = json!("P2");
+
+        assert_eq!(footer_variant(blocks).flow_height, 40.0);
+    }
+
+    #[test]
+    fn all_hollow_fragments_keep_the_paragraph_mark_line() {
+        let mut blocks = split_paragraph_blocks();
+        blocks[2]["runs"] = json!([]);
+
+        assert_eq!(footer_variant(blocks).flow_height, 20.0);
+    }
+
+    #[test]
+    fn footer_story_bottom_sits_at_the_footer_distance() {
+        let variant = footer_variant(split_paragraph_blocks());
+        let origin = footer_flow_origin(500.0, 20.0, variant.flow_height);
+
+        assert_eq!(origin + variant.flow_height, 500.0 - 20.0);
+        assert_eq!(origin, 460.0);
     }
 
     #[test]

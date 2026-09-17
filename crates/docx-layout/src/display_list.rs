@@ -4698,10 +4698,9 @@ fn recompose_hf_region(
         }
         HfKind::Footer => {
             let distance = hf.footer_distance.or(page.margins.footer).unwrap_or(48.0);
-            (
-                page.size.h - distance - flow_height,
-                page.size.h - distance - flow_height,
-            )
+            let origin =
+                crate::header_footer::footer_flow_origin(page.size.h, distance, flow_height);
+            (origin, origin)
         }
     };
     let geom = PageFloatGeom {
