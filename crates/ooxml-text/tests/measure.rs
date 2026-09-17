@@ -3035,3 +3035,134 @@ fn run_opt_out_does_not_snap() {
         "opt-out lineHeight",
     );
 }
+
+// 37a. an image-dictated box takes whole grid rows
+//
+// `wp:extent` carries none of the font-metric uncertainty that keeps a text
+// box at one row, and an unrounded image pushes every following line off the
+// grid. Which fitting applies follows which metric sets the height.
+
+/// An image-grown line rounds up to whole rows where a text box of the same
+/// height would keep its natural height.
+#[test]
+fn grid_snaps_an_image_grown_line_to_whole_rows() {
+    let v = measure_with(
+        json!({
+            "kind": "paragraph",
+            "runs": [{ "kind": "image", "width": 50.0, "height": 100.0 }],
+            "attrs": { "docGridPitchPx": 24.0 }
+        }),
+        200.0,
+    )
+    .unwrap();
+    let line = &v["lines"][0];
+    // 100 + 3.2 descent buffer = 103.2px, five 24px rows.
+    approx(line["lineHeight"].as_f64().unwrap(), 120.0, "5 grid rows");
+    approx(line["ascent"].as_f64().unwrap(), 100.0, "image ascent");
+    approx(line["descent"].as_f64().unwrap(), 3.2, "buffer descent");
+
+    // A text box of comparable height on the same grid stops at one row.
+    let v = measure_with(
+        json!({
+            "kind": "paragraph",
+            "runs": [{ "kind": "text", "text": "0", "fontSize": 24.0 }],
+            "attrs": { "docGridPitchPx": 24.0 }
+        }),
+        200.0,
+    )
+    .unwrap();
+    approx(
+        v["lines"][0]["lineHeight"].as_f64().unwrap(),
+        2.0 * LH,
+        "text keeps its natural height",
+    );
+}
+
+/// An own-line image rounds the same way, buffer on both sides included.
+#[test]
+fn grid_snaps_an_own_line_image_to_whole_rows() {
+    let v = measure_with(
+        json!({
+            "kind": "paragraph",
+            "runs": [{
+                "kind": "image", "width": 50.0, "height": 100.0, "displayMode": "block"
+            }],
+            "attrs": { "docGridPitchPx": 24.0 }
+        }),
+        200.0,
+    )
+    .unwrap();
+    let line = &v["lines"][0];
+    // 100 + 6 + 6 distances + 2 × 3.2 buffer = 118.4px, five 24px rows.
+    approx(line["lineHeight"].as_f64().unwrap(), 120.0, "5 grid rows");
+    approx(line["ascent"].as_f64().unwrap(), 115.2, "image ascent");
+}
+
+/// On a mixed line the taller metric governs: an image that outgrows the
+/// ruled text box rounds the whole box to whole rows.
+#[test]
+fn grid_snaps_a_mixed_line_the_image_dictates() {
+    let v = measure_with(
+        json!({
+            "kind": "paragraph",
+            "runs": [
+                { "kind": "text", "text": "0" },
+                { "kind": "image", "width": 50.0, "height": 100.0 }
+            ],
+            "attrs": { "docGridPitchPx": 24.0 }
+        }),
+        200.0,
+    )
+    .unwrap();
+    let line = &v["lines"][0];
+    // 100 + DESC buffer = 103.39px, five 24px rows.
+    approx(line["lineHeight"].as_f64().unwrap(), 120.0, "5 grid rows");
+    approx(line["ascent"].as_f64().unwrap(), 100.0, "image ascent");
+    approx(
+        line["descent"].as_f64().unwrap(),
+        DESC,
+        "text buffer descent",
+    );
+}
+
+/// An image that fits inside the ruled text box leaves the text fitting in
+/// charge, so the one-row cap still holds.
+#[test]
+fn grid_keeps_the_text_cap_when_the_image_fits() {
+    let v = measure_with(
+        json!({
+            "kind": "paragraph",
+            "runs": [
+                { "kind": "text", "text": "0", "fontSize": 24.0 },
+                { "kind": "image", "width": 10.0, "height": 20.0 }
+            ],
+            "attrs": { "docGridPitchPx": 24.0 }
+        }),
+        200.0,
+    )
+    .unwrap();
+    approx(
+        v["lines"][0]["lineHeight"].as_f64().unwrap(),
+        2.0 * LH,
+        "text-ruled height",
+    );
+}
+
+/// The `w:snapToGrid` opt-out disables the image fitting too.
+#[test]
+fn image_opt_out_does_not_snap() {
+    let v = measure_with(
+        json!({
+            "kind": "paragraph",
+            "runs": [{ "kind": "image", "width": 50.0, "height": 100.0 }],
+            "attrs": { "docGridPitchPx": 24.0, "snapToGrid": false }
+        }),
+        200.0,
+    )
+    .unwrap();
+    approx(
+        v["lines"][0]["lineHeight"].as_f64().unwrap(),
+        103.2,
+        "opt-out lineHeight",
+    );
+}

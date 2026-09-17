@@ -81,15 +81,15 @@ pub(super) struct FillParams<'a> {
     /// Paragraph Y in the floating-zone coordinate space.
     pub paragraph_y_offset: f32,
     pub authoritative_shaping: bool,
-    /// Grid pitch in px for snap-to-grid (`w:docGrid w:linePitch`), already
-    /// gated to an activating grid type AND the paragraph opt-out (`None`
-    /// disables snapping). The filler additionally requires an `auto`
-    /// spacing rule. Per-line run opt-outs in `run_snaps` can still
-    /// disable individual lines.
+    /// Grid pitch in px (`w:docGrid w:linePitch`), already gated to an
+    /// activating grid type AND the paragraph opt-out (`None` disables grid
+    /// fitting). The filler additionally requires an `auto` spacing rule.
+    /// Per-line run opt-outs in `run_snaps` can still disable individual
+    /// lines.
     pub snap_pitch_px: Option<f32>,
     /// Per prepared run (index-aligned with `prepared`): whether the run
-    /// allows grid snapping (`w:snapToGrid`, default on). A line containing
-    /// any disallowing run does not snap.
+    /// allows grid fitting (`w:snapToGrid`, default on). A line containing
+    /// any disallowing run does not fit.
     pub run_snaps: &'a [bool],
 }
 
@@ -256,9 +256,9 @@ pub(super) fn fill(p: FillParams) -> Result<ParagraphExtentOut, MeasureError> {
 /// the ruled height of `font` at `size_pt`, floored at
 /// [`WORD_SINGLE_LINE_FLOOR`] × the font size under every rule but `exact`.
 /// When `snap_pitch_px` is set and the rule is `auto`, the content box is
-/// first rounded up to a whole number of grid rows, so the rule's multiple
-/// scales the quantized pitch (a pinned `exact`/`atLeast` height never
-/// snaps).
+/// first filled to one grid row, so the rule's multiple scales the filled
+/// pitch (a pinned `exact`/`atLeast` height never fits the grid). The line
+/// carries no image, so the text fitting always applies.
 pub(super) fn empty_paragraph_extent(
     store: &crate::font_store::FontStore,
     font: FontId,
@@ -273,11 +273,11 @@ pub(super) fn empty_paragraph_extent(
     let size_px = pt_to_px(size_pt);
     let content = wm::single_line_box(metrics, size_px, &to_flags(compat));
     let rule = rule_from_spacing(spacing);
-    // Pinned boxes (`exact` fixed, `atLeast` author-floored) never snap;
-    // only automatically-determined heights do.
+    // Pinned boxes (`exact` fixed, `atLeast` author-floored) never fit the
+    // grid; only automatically-determined heights do.
     let auto_rule = matches!(rule, wm::LineSpacingRule::Auto { .. });
     let content = match snap_pitch_px.filter(|_| auto_rule) {
-        Some(pitch) => wm::snap_line_box(content, pitch),
+        Some(pitch) => wm::fill_grid_row_box(content, pitch),
         None => content,
     };
     let ruled = wm::apply_spacing_rule(content, &rule);
@@ -619,13 +619,14 @@ impl Filler<'_> {
         }
     }
 
-    /// Whether the current line may snap: the paragraph carries an active
-    /// grid pitch, the spacing rule leaves the height automatic (`auto` —
-    /// a pinned `exact` box is fixed regardless of content and an `atLeast`
-    /// floor is author-set, so Word snaps neither), and no contributing
-    /// run opts out. Lines with no recorded contributions (e.g. only
-    /// hidden runs) defer to the paragraph.
-    fn line_may_snap(&self) -> bool {
+    /// Whether the current line fits the grid at all — the gate shared by
+    /// both fittings: the paragraph carries an active grid pitch, the
+    /// spacing rule leaves the height automatic (`auto` — a pinned `exact`
+    /// box is fixed regardless of content and an `atLeast` floor is
+    /// author-set, so Word fits neither), and no contributing run opts out.
+    /// Lines with no recorded contributions (e.g. only hidden runs) defer to
+    /// the paragraph.
+    fn line_fits_grid(&self) -> bool {
         if self.p.snap_pitch_px.is_none() {
             return false;
         }
@@ -641,20 +642,20 @@ impl Filler<'_> {
         })
     }
 
-    /// Round the content box up to a whole number of grid rows, before the
-    /// spacing rule scales it.
-    fn snap_content_box(&self, content: wm::LineBox) -> wm::LineBox {
-        match (self.p.snap_pitch_px, self.line_may_snap()) {
-            (Some(pitch), true) => wm::snap_line_box(content, pitch),
+    /// Fill a text content box to one grid row, before the spacing rule
+    /// scales it.
+    fn fill_content_row(&self, content: wm::LineBox) -> wm::LineBox {
+        match (self.p.snap_pitch_px, self.line_fits_grid()) {
+            (Some(pitch), true) => wm::fill_grid_row_box(content, pitch),
             _ => content,
         }
     }
 
-    /// Snap a final (possibly image-grown) line box. Ascent/descent stay
-    /// put; the caller grows only the box.
-    fn snap_line_height(&self, height: f32) -> f32 {
-        match (self.p.snap_pitch_px, self.line_may_snap()) {
-            (Some(pitch), true) => wm::snap_line_height(height, pitch),
+    /// Round an image-dictated box up to whole grid rows. Ascent/descent
+    /// stay put; the caller grows only the box.
+    fn snap_image_rows(&self, height: f32) -> f32 {
+        match (self.p.snap_pitch_px, self.line_fits_grid()) {
+            (Some(pitch), true) => wm::snap_to_grid_rows(height, pitch),
             _ => height,
         }
     }
@@ -706,7 +707,7 @@ impl Filler<'_> {
                 leading: size_px * (DEFAULT_SINGLE_LINE_RATIO - 1.0),
             },
         };
-        let content = self.snap_content_box(content);
+        let content = self.fill_content_row(content);
         let ruled = wm::apply_spacing_rule(content, &self.rule);
         let mut ascent = ruled.ascent;
         let mut descent = ruled.descent;
@@ -732,11 +733,11 @@ impl Filler<'_> {
                 line_height = image_h + buffer;
                 ascent = image_h;
             }
-            // The grid snaps the final box of an `auto`-ruled line,
-            // whatever grew it (`line_may_snap` still gates pinned rules
-            // out). Ascent/descent stay put so the extra lands below the
-            // descent.
-            line_height = self.snap_line_height(line_height);
+            // `wp:extent` now governs the height, so the grid takes whole
+            // rows here rather than the one-row fill the text path uses
+            // (`line_fits_grid` still gates pinned rules out). Ascent and
+            // descent stay put, so the extra lands below the descent.
+            line_height = self.snap_image_rows(line_height);
         }
 
         // Float fields are omitted when unset.
