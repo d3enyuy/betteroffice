@@ -81,15 +81,10 @@ pub(super) struct FillParams<'a> {
     /// Paragraph Y in the floating-zone coordinate space.
     pub paragraph_y_offset: f32,
     pub authoritative_shaping: bool,
-    /// Grid pitch in px (`w:docGrid w:linePitch`), already gated to an
-    /// activating grid type AND the paragraph opt-out (`None` disables grid
-    /// fitting). The filler additionally requires an `auto` spacing rule.
-    /// Per-line run opt-outs in `run_snaps` can still disable individual
-    /// lines.
+    /// Grid pitch in px; `None` disables grid fitting.
     pub snap_pitch_px: Option<f32>,
     /// Per prepared run (index-aligned with `prepared`): whether the run
-    /// allows grid fitting (`w:snapToGrid`, default on). A line containing
-    /// any disallowing run does not fit.
+    /// allows grid fitting (`w:snapToGrid`, default on).
     pub run_snaps: &'a [bool],
 }
 
@@ -256,9 +251,7 @@ pub(super) fn fill(p: FillParams) -> Result<ParagraphExtentOut, MeasureError> {
 /// the ruled height of `font` at `size_pt`, floored at
 /// [`WORD_SINGLE_LINE_FLOOR`] × the font size under every rule but `exact`.
 /// When `snap_pitch_px` is set and the rule is `auto`, the content box is
-/// first filled to one grid row, so the rule's multiple scales the filled
-/// pitch (a pinned `exact`/`atLeast` height never fits the grid). The line
-/// carries no image, so the text fitting always applies.
+/// first filled to one grid row, so the rule's multiple scales it.
 pub(super) fn empty_paragraph_extent(
     store: &crate::font_store::FontStore,
     font: FontId,
@@ -273,8 +266,7 @@ pub(super) fn empty_paragraph_extent(
     let size_px = pt_to_px(size_pt);
     let content = wm::single_line_box(metrics, size_px, &to_flags(compat));
     let rule = rule_from_spacing(spacing);
-    // Pinned boxes (`exact` fixed, `atLeast` author-floored) never fit the
-    // grid; only automatically-determined heights do.
+    // Only automatically-determined heights fit the grid.
     let auto_rule = matches!(rule, wm::LineSpacingRule::Auto { .. });
     let content = match snap_pitch_px.filter(|_| auto_rule) {
         Some(pitch) => wm::fill_grid_row_box(content, pitch),

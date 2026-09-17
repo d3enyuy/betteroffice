@@ -3037,13 +3037,8 @@ fn run_opt_out_does_not_snap() {
 }
 
 // 37a. an image-dictated box takes whole grid rows
-//
-// `wp:extent` carries none of the font-metric uncertainty that keeps a text
-// box at one row, and an unrounded image pushes every following line off the
-// grid. Which fitting applies follows which metric sets the height.
 
-/// An image-grown line rounds up to whole rows where a text box of the same
-/// height would keep its natural height.
+/// An image-grown line rounds up to whole rows.
 #[test]
 fn grid_snaps_an_image_grown_line_to_whole_rows() {
     let v = measure_with(
@@ -3056,12 +3051,12 @@ fn grid_snaps_an_image_grown_line_to_whole_rows() {
     )
     .unwrap();
     let line = &v["lines"][0];
-    // 100 + 3.2 descent buffer = 103.2px, five 24px rows.
+    // 103.2px -> five 24px rows.
     approx(line["lineHeight"].as_f64().unwrap(), 120.0, "5 grid rows");
     approx(line["ascent"].as_f64().unwrap(), 100.0, "image ascent");
     approx(line["descent"].as_f64().unwrap(), 3.2, "buffer descent");
 
-    // A text box of comparable height on the same grid stops at one row.
+    // A text box of the same height stops at one row.
     let v = measure_with(
         json!({
             "kind": "paragraph",
@@ -3078,7 +3073,7 @@ fn grid_snaps_an_image_grown_line_to_whole_rows() {
     );
 }
 
-/// An own-line image rounds the same way, buffer on both sides included.
+/// An own-line image rounds the same way.
 #[test]
 fn grid_snaps_an_own_line_image_to_whole_rows() {
     let v = measure_with(
@@ -3093,13 +3088,12 @@ fn grid_snaps_an_own_line_image_to_whole_rows() {
     )
     .unwrap();
     let line = &v["lines"][0];
-    // 100 + 6 + 6 distances + 2 × 3.2 buffer = 118.4px, five 24px rows.
+    // 118.4px -> five 24px rows.
     approx(line["lineHeight"].as_f64().unwrap(), 120.0, "5 grid rows");
     approx(line["ascent"].as_f64().unwrap(), 115.2, "image ascent");
 }
 
-/// On a mixed line the taller metric governs: an image that outgrows the
-/// ruled text box rounds the whole box to whole rows.
+/// On a mixed line the taller metric governs.
 #[test]
 fn grid_snaps_a_mixed_line_the_image_dictates() {
     let v = measure_with(
@@ -3115,7 +3109,7 @@ fn grid_snaps_a_mixed_line_the_image_dictates() {
     )
     .unwrap();
     let line = &v["lines"][0];
-    // 100 + DESC buffer = 103.39px, five 24px rows.
+    // 103.39px -> five 24px rows.
     approx(line["lineHeight"].as_f64().unwrap(), 120.0, "5 grid rows");
     approx(line["ascent"].as_f64().unwrap(), 100.0, "image ascent");
     approx(
@@ -3125,8 +3119,7 @@ fn grid_snaps_a_mixed_line_the_image_dictates() {
     );
 }
 
-/// An image that fits inside the ruled text box leaves the text fitting in
-/// charge, so the one-row cap still holds.
+/// An image inside the ruled text box leaves the text cap in charge.
 #[test]
 fn grid_keeps_the_text_cap_when_the_image_fits() {
     let v = measure_with(
