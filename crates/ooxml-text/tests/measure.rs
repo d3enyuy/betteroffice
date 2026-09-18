@@ -540,11 +540,14 @@ fn a_shorter_font_does_not_add_leading_below_a_taller_font() {
         let out = measure_paragraph_json(&store, &input.to_string()).unwrap();
         let result: Value = serde_json::from_str(&out).unwrap();
         let line = &result["lines"][0];
+        // Noto Naskh Arabic pitches on its hhea line height (1.703 em) while
+        // keeping its win extents (1.405 / 0.634), so the taller face still
+        // sets both edges and the Latin run adds nothing below.
         approx(line["ascent"].as_f64().unwrap(), 16.0 * 1.405, "ascent");
         approx(line["descent"].as_f64().unwrap(), 16.0 * 0.634, "descent");
         approx(
             line["lineHeight"].as_f64().unwrap(),
-            16.0 * 2.039,
+            16.0 * 1.703,
             "line height",
         );
     }

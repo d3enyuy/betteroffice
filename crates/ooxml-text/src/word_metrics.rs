@@ -9,21 +9,45 @@
 //!
 //! # 1. Font-unit line height (single spacing) — [`single_line_box`]
 //!
-//! Word derives the default line height from `OS/2` **usWinAscent +
-//! usWinDescent** (the GDI `tmHeight` lineage), *not* from hhea
-//! ascender/descender and *not* from sTypo values — which is why
-//! [`crate::font_store::FontMetrics`] carries all three families. External
-//! leading follows GDI's `tmExternalLeading`:
+//! Word's single-spacing line **pitch** is the hhea line height,
+//! `hhea(ascender − descender + lineGap)` — not the `OS/2` win box and not
+//! sTypo. Measured off Word 16.112's own PDF export at 40pt over ten faces
+//! spanning both directions of divergence: Times New Roman (hhea 1.1499 vs
+//! win 1.1074) and Arial (1.1499 vs 1.1172) measure 1.1497 and 1.1496 em;
+//! Aptos (1.2207 vs 1.2847), Gabriola (1.7000 vs 1.8408) and Corbel (1.2075
+//! vs 1.2207) measure 1.2205, 1.6995 and 1.2059 em. Every face lands on its
+//! hhea line height within 0.15%, none on the win box where the two differ.
+//! `USE_TYPO_METRICS` does not select the family: Corbel leaves bit 7 clear
+//! and still measures below its win box, and the two faces that set the bit
+//! have hhea == sTypo, so they never distinguished the two rules.
+//!
+//! The box is still *split* on the win metrics, which is why
+//! [`crate::font_store::FontMetrics`] carries all three families: ascent =
+//! usWinAscent, descent = usWinDescent, and the rest of the pitch is leading
+//! placed *below* the descent (baseline hugging the top):
 //!
 //! ```text
-//! tmExternalLeading = MAX(0, hhea(ascender − descender + lineGap)
-//!                            − (usWinAscent + usWinDescent))
+//! leading = hhea(ascender − descender + lineGap) − (usWinAscent + usWinDescent)
 //! ```
 //!
-//! scaled to the requested size, and Word places it *below* the descent
-//! (line pitch = ascent + descent + external leading, baseline hugging the
-//! top of the pitch). The `w:noLeading` compatibility flag (`w:compat`,
-//! ECMA-376 §17.15.3) drops that external leading entirely.
+//! scaled to the requested size. That delta is **signed**: a face whose win
+//! box overruns its hhea line height gets negative leading, so consecutive
+//! baselines sit one hhea line height apart while glyphs keep their win
+//! extents and may overlap between lines — which is what Word does. Clamping
+//! it at zero (GDI's `tmExternalLeading`) inflated every such face. Caladea,
+//! the Cambria substitute, is the one bundled Latin face affected: win 1.3000
+//! against hhea 1.1500, where real Cambria is 1.1724 on all three families.
+//! The `w:noLeading` compatibility flag (`w:compat`, ECMA-376 §17.15.3) drops
+//! the leading entirely.
+//!
+//! The measurements above are all `OS/2` version 2 or later. Every version 1
+//! face measured instead sits on its bare win box, whichever way its hhea
+//! runs — Bauhaus 93 (hhea 1.4604, win 1.1318) measures 1.1309 em, Century
+//! Gothic (1.2261 / 1.1914) 1.1909, Book Antiqua (1.2056 / 1.2427) 1.2422,
+//! Wide Latin (1.0000 / 1.2310) 1.2303 — so the hhea pitch is gated on the
+//! `OS/2` version. Version 1 keeps the clamped delta, which leaves its pitch
+//! where it already was rather than moving a class of face this engine never
+//! ships: every bundled face is version 3 or 4.
 //!
 //! # 2. Auto / exact / atLeast spacing — [`apply_spacing_rule`]
 //!
@@ -126,6 +150,10 @@
 //! are independent, opt-in experiments. GDI rounds ppem and components; typo
 //! spacing selects version-4 `USE_TYPO_METRICS` with a signed gap. Both remain
 //! unavailable to paragraph input because observed Word output did not quantize.
+//! The typo experiment stays gated on its own evidence: Word measures Corbel
+//! on hhea with bit 7 clear, and the bundled CJK faces carry an sTypo line
+//! height of 1.0000 em against a 1.4480 em hhea, so selecting sTypo is not a
+//! Word behavior to reproduce.
 
 use crate::font_store::FontMetrics;
 use crate::shape::ShapeFeature;
@@ -230,11 +258,24 @@ const MAX_METRIC_EMS: i32 = 16;
 /// Word's 1638pt size limit in px at 96 DPI.
 const MAX_SIZE_PX: f32 = 2184.0;
 
-/// hhea line height in excess of the win box, in design units.
+/// Signed design-unit delta that lifts the win box onto the hhea line height,
+/// which is the pitch Word measures. Negative for a face whose win box
+/// overruns its hhea line height.
+///
+/// Only an `OS/2` version 2 or later face goes negative. Every version 1 face
+/// measured on Word sits on its win box whichever way its hhea runs — Bauhaus
+/// 93 (hhea 1.4604, win 1.1318) measures 1.1309 em and Century Gothic (1.2261
+/// / 1.1914) measures 1.1909 — so their clamp stays, keeping today's pitch for
+/// a class this engine has no reason to move.
 fn win_external_leading(m: &FontMetrics) -> i32 {
     let hhea_total = m.hhea_ascender as i32 - m.hhea_descender as i32 + m.hhea_line_gap as i32;
     let win_total = m.os2_win_ascent as i32 + m.os2_win_descent as i32;
-    (hhea_total - win_total).max(0)
+    let delta = hhea_total - win_total;
+    if m.os2_version >= 2 {
+        delta
+    } else {
+        delta.max(0)
+    }
 }
 
 /// Bounded design metrics for the opt-in experiments.
@@ -258,7 +299,7 @@ fn experimental_metric_family(m: &FontMetrics, allow_typo: bool) -> (i32, i32, i
     (
         (m.os2_win_ascent as i32).min(cap),
         (m.os2_win_descent as i32).min(cap),
-        win_external_leading(m).min(cap),
+        win_external_leading(m).clamp(-cap, cap),
     )
 }
 

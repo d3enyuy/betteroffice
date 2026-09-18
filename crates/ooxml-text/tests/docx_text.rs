@@ -10,6 +10,7 @@ use ooxml_text::{
 const LIBERATION_SANS: &[u8] = include_bytes!("fonts/LiberationSans-Regular.ttf");
 const NOTO_NASKH_ARABIC: &[u8] =
     include_bytes!("../../../packages/fonts/assets/NotoNaskhArabic-Regular.ttf");
+const CALADEA: &[u8] = include_bytes!("../../../packages/fonts/assets/Caladea-Regular.ttf");
 
 fn store_with_font() -> (FontStore, ooxml_text::FontId) {
     let mut store = FontStore::new();
@@ -305,6 +306,81 @@ fn single_line_box_uses_win_metrics_and_gdi_external_leading() {
     assert_eq!(line.height(), (1854.0 + 434.0 + 67.0) * 16.0 / 2048.0);
 }
 
+/// Liberation Sans leaves `USE_TYPO_METRICS` clear and its hhea line height
+/// (1.1499 em) exceeds its win box (1.1172 em), so the leading is positive.
+/// Word 16.112 measures the real Arial at 1.1496 em — the same hhea pitch.
+#[test]
+fn line_pitch_is_the_hhea_line_height_without_use_typo_metrics() {
+    let (store, id) = store_with_font();
+    let m = store.metrics(id).unwrap();
+    assert!(!m.use_typo_metrics(), "Liberation Sans leaves bit 7 clear");
+
+    let line = single_line_box(m, 16.0, &CompatFlags::default());
+    assert!(
+        line.leading > 0.0,
+        "win box sits inside the hhea line height"
+    );
+    assert_eq!(line.height(), (1854.0 + 434.0 + 67.0) * 16.0 / 2048.0);
+}
+
+/// Caladea, the bundled Cambria substitute, sets `USE_TYPO_METRICS` and is the
+/// one bundled Latin face whose win box (1.3000 em) overruns its hhea line
+/// height (1.1500 em). The pitch follows hhea and the leading goes negative;
+/// the bit itself selects nothing, since Word measures Corbel the same way
+/// with bit 7 clear.
+#[test]
+fn line_pitch_is_the_hhea_line_height_with_use_typo_metrics() {
+    let mut store = FontStore::new();
+    let id = store.register(CALADEA.to_vec()).expect("Caladea registers");
+    let m = store.metrics(id).unwrap();
+    assert!(m.use_typo_metrics(), "Caladea sets bit 7");
+
+    let scale = 16.0 / 1000.0;
+    let line = single_line_box(m, 16.0, &CompatFlags::default());
+    assert_eq!(
+        line,
+        LineBox {
+            ascent: 1050.0 * scale,
+            descent: 250.0 * scale,
+            leading: -150.0 * scale,
+        }
+    );
+    assert!((line.height() - 1.15 * 16.0).abs() < 1e-4, "{line:?}");
+}
+
+/// Word measures an `OS/2` version 1 face on its bare win box whichever way
+/// its hhea runs (Bauhaus 93, Century Gothic, Book Antiqua, Wide Latin), so
+/// the negative delta is gated on version 2 and later and a version 1 face
+/// keeps the clamp.
+#[test]
+fn only_os2_version_two_and_later_take_a_negative_delta() {
+    let caladea_shaped = |version: u16| FontMetrics {
+        units_per_em: 1000,
+        hhea_ascender: 900,
+        hhea_descender: -250,
+        hhea_line_gap: 0,
+        os2_win_ascent: 1050,
+        os2_win_descent: 250,
+        os2_version: version,
+        ..synthetic_metrics()
+    };
+    let scale = 16.0 / 1000.0;
+    for version in [0u16, 1] {
+        assert_eq!(
+            single_line_box(&caladea_shaped(version), 16.0, &CompatFlags::default()).leading,
+            0.0,
+            "version {version}"
+        );
+    }
+    for version in [2u16, 3, 4] {
+        assert_eq!(
+            single_line_box(&caladea_shaped(version), 16.0, &CompatFlags::default()).leading,
+            -150.0 * scale,
+            "version {version}"
+        );
+    }
+}
+
 #[test]
 fn no_leading_compat_flag_drops_external_leading_only() {
     let (store, id) = store_with_font();
@@ -380,12 +456,14 @@ fn default_path_does_not_clamp_spec_valid_vertical_metrics() {
         ..synthetic_metrics()
     };
 
+    // hhea line height 860 against a 20480 win box: the pitch follows hhea, so
+    // the leading is the signed delta and the ascent is still not clamped.
     assert_eq!(
         single_line_box(&metrics, 16.0, &CompatFlags::default()),
         LineBox {
             ascent: 320.0,
             descent: 0.0,
-            leading: 0.0,
+            leading: (860 - 20480) as f32 * (16.0 / 1024.0),
         }
     );
     assert_eq!(single_line_box(&metrics, 16.0, &gdi_flags()).ascent, 256.0);
@@ -613,27 +691,41 @@ fn experimental_metrics_stay_bounded_and_non_negative() {
         hhea_line_gap: i16::MAX,
         ..synthetic_metrics()
     };
+    // Leading is signed — a win box overrunning the hhea line height pulls it
+    // negative — but it stays bounded by the same per-component ceiling.
     for compat in [gdi_flags(), typo_flags(), gdi_typo_flags()] {
         let line = single_line_box(&tiny_em, 16.0, &compat);
-        for part in [line.ascent, line.descent, line.leading] {
+        for part in [line.ascent, line.descent] {
             assert!(
                 (0.0..=256.0).contains(&part),
                 "{part} / gdi={}",
                 compat.gdi_line_metrics
             );
         }
+        assert!(
+            (-256.0..=256.0).contains(&line.leading),
+            "{} / gdi={}",
+            line.leading,
+            compat.gdi_line_metrics
+        );
     }
 
     for compat in [gdi_flags(), typo_flags(), gdi_typo_flags()] {
         for size_px in [1.0e30, f32::MAX] {
             let line = single_line_box(&tiny_em, size_px, &compat);
-            for part in [line.ascent, line.descent, line.leading] {
+            for part in [line.ascent, line.descent] {
                 assert!(
                     part.is_finite() && (0.0..=34_944.0).contains(&part),
                     "{part} at {size_px} / gdi={}",
                     compat.gdi_line_metrics
                 );
             }
+            assert!(
+                line.leading.is_finite() && (-34_944.0..=34_944.0).contains(&line.leading),
+                "{} at {size_px} / gdi={}",
+                line.leading,
+                compat.gdi_line_metrics
+            );
         }
     }
 
