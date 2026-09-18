@@ -13,13 +13,7 @@ use crate::types::{
 const DEFAULT_HF_DISTANCE_PX: f64 = 48.0;
 const MIN_CONTENT_HEIGHT_PX: f64 = 24.0;
 
-/// Top of a footer story's in-flow content.
-///
-/// `w:footer` (ECMA-376 17.6.11 `w:pgMar`) is the distance from the bottom edge
-/// of the page to the bottom edge of the footer, so the story is bottom
-/// anchored and its origin follows its own flow height. Every projection that
-/// places footer content resolves it here so they cannot drift apart; a header
-/// needs no helper because `w:header` is already the origin.
+/// Top of a footer story's in-flow content; the story is bottom anchored.
 pub fn footer_flow_origin(page_height: f64, distance: f64, flow_height: f64) -> f64 {
     page_height - distance - flow_height
 }
@@ -53,15 +47,7 @@ fn has_inline_content(paragraph: &ParagraphBlock) -> bool {
     })
 }
 
-/// Restores one line stack per source `w:p`.
-///
-/// Lowering splits a paragraph that holds a block-level drawing into the run
-/// segments around it, and each segment then measures as a paragraph of its
-/// own — so a footer whose single paragraph anchors a shape stacks two line
-/// boxes where Word lays the paragraph out once, and the whole bottom-anchored
-/// story rides that high. Fragments share the source `paraId`: those without
-/// inline content collapse to nothing, and when no fragment has any the first
-/// keeps the paragraph's own empty line.
+/// Restores one line stack per source `w:p`; fragments share its `paraId`.
 fn collapse_split_paragraphs(blocks: &mut [LayoutBlock], measures: &mut [BlockExtent]) {
     let mut fragments: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (index, block) in blocks.iter().enumerate() {

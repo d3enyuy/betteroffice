@@ -38,14 +38,11 @@
 //!
 //! The distance resolves as the envelope override, then the page's
 //! `margins.header` / `margins.footer`, then `DEFAULT_HF_DISTANCE_PX`. Both
-//! kinds take the interactive height `max(flowHeight - min(0, visualTop), 24)`,
-//! which is a minimum for the clickable rect only and never for the content.
-//! A header band sits at `distance + visualTop` and flows content from
-//! `distance`. A footer band is bottom-anchored: it sits at
-//! `pageHeight - distance - bandHeight` and flows content — and anchors
-//! floating tables — from `header_footer::footer_flow_origin`, so `w:footer`
-//! lands the bottom of the story on the page. Content starts at `margins.left`
-//! horizontally in both cases.
+//! kinds take the interactive height `max(flowHeight - min(0, visualTop), 24)`;
+//! the 24 floor is the clickable rect only, never the content. A header band
+//! sits at `distance + visualTop` and flows from `distance`; a footer band is
+//! bottom-anchored via `header_footer::footer_flow_origin`. Content starts at
+//! `margins.left` in both cases.
 //!
 //! # Stacking inside a band
 //!
