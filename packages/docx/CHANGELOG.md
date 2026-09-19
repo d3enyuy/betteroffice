@@ -1,5 +1,19 @@
 # @betteroffice/docx
 
+## 0.3.0
+
+### Minor Changes
+
+- b46ad04: Add a format-owned text search API to Yrs document sessions.
+
+### Patch Changes
+
+- 8eddb2e: Apply the document grid to line heights: sections with an activating `w:docGrid` type (`lines`, `linesAndChars`, `snapToChars`) fill each `auto`-ruled line's content box up to one grid row, so a line-spacing multiple then scales the filled grid pitch — a 1.5-spaced line on a one-row grid is 1.5 rows tall, as Word renders it. A content box already taller than one row keeps its natural height. Paragraph/run `w:snapToGrid` opt-outs are honoured. Grids with `default` type or a bare `linePitch` never snap, and pinned `exact`/`atLeast` heights never snap.
+- e151d79: Preserve first-line indentation when direct formatting or a derived style overrides a hanging indent, keeping paragraph wrapping and pagination consistent with Word.
+- e5ad702: Hide the cached result of a block-spanning suppressed field in documents that carry no `w14:paraId`. The result blocks were matched by paragraph id, which is optional in OOXML, so a field whose result spanned blocks kept rendering them while its inline display text was already blanked. Seeding now binds the field to the story blocks its cached result duplicates — tables and block content controls as well as paragraphs — so editing the story cannot shift the suppressed range.
+- 2958935: Render textless inline shapes as native shape atoms with hit, caret and range support, preserving image occlusion and group parent-only selection.
+- 41f508b: Honor explicit bold, italic and color settings on numbering levels when rendering list markers, including settings that turn inherited formatting off.
+
 ## 0.2.1
 
 ## 0.2.0

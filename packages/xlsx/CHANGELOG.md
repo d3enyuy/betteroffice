@@ -1,5 +1,11 @@
 # @betteroffice/xlsx
 
+## 0.3.0
+
+### Minor Changes
+
+- bcc90ba: Add a format-owned text search API for formatted workbook cell values.
+
 ## 0.2.1
 
 ## 0.2.0
